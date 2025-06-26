@@ -93,12 +93,20 @@ class VendingMachine:
 
         self.serial.write(packet)
 
-        if self.serial.in_waiting:
-            response = self.serial.read(self.serial.in_waiting)
-            if response and (not is_ack_packet or self.print_ack_packets):
-                self._debug_print(f"<< RECEIVED RESPONSE:")
-                self._print_hex(response, "<< ", force_print=True)
-            return response
+        # For menu commands, wait a bit longer for response
+        if cmd_type == 0x70:  # Menu command
+            time.sleep(0.1)  # Wait 100ms for menu response
+
+        # Try multiple times to get response
+        for i in range(10):  # Try for up to 1 second
+            if self.serial.in_waiting:
+                response = self.serial.read(self.serial.in_waiting)
+                if response and (not is_ack_packet or self.print_ack_packets):
+                    self._debug_print(f"<< RECEIVED RESPONSE:")
+                    self._print_hex(response, "<< ", force_print=True)
+                return response
+            time.sleep(0.1)  # Wait 100ms between checks
+
         return None
 
     def _parse_selection_status(self, response):
@@ -112,19 +120,53 @@ class VendingMachine:
             return status
         return None
 
+    def handle_payment(self, selection_number):
+        """Handle payment processing and initiate product dispensing"""
+        # Get selection info including price
+        selection_info = self.get_price(selection_number)
+
+        if not selection_info:
+            print(
+                f"❌ Could not get price information for selection {selection_number}"
+            )
+            return False
+
+        required_price = selection_info["price"]
+        inventory = selection_info["inventory"]
+
+        # Check if product is available
+        if inventory <= 0:
+            print(f"❌ Product #{selection_number} is out of stock")
+            return False
+
+        # Store current selection and price
+        self.current_selection = selection_number
+        self.current_price = required_price
+
+        # Check if we have sufficient payment
+        if self.payment_amount * 100 >= required_price:
+            print(f"✅ Sufficient payment received. Dispensing product...")
+
+            # Send purchase command directly
+            command = VMC_COMMANDS["SELECT_TO_BUY"]["code"]
+            data = selection_number.to_bytes(2, "big")
+            packet = self.create_packet(command, data)
+            self.send_packet(packet)
+
+            return True
+        else:
+            needed_amount = (required_price / 100.0) - self.payment_amount
+            print(f"💸 Insufficient payment. Need additional: ${needed_amount:.2f}")
+            print("💰 Please insert more money...")
+            return True  # Payment process continues
+
     def initiate_purchase(self, selection_number):
         """Start the purchase process for a selection"""
-        # First check selection status
-        status = self.check_selection(selection_number)
-        if status != 0x01:  # If not normal
-            return False, self._get_status_message(status)
-
-        # Send purchase command
+        # Send purchase command directly
         command = VMC_COMMANDS["SELECT_TO_BUY"]["code"]
         data = selection_number.to_bytes(2, "big")
         packet = self.create_packet(command, data)
         response = self.send_packet(packet)
-
         return True, "Purchase initiated"
 
     def _get_status_message(self, status):
@@ -197,15 +239,22 @@ class VendingMachine:
 
         return True, "Valid packet"
 
-    def format_price(self, price_value):
-        """Format price value into a display string"""
-        if price_value is None:
-            return "Unknown"
+    def check_selection(self, selection_number):
+        """Check selection status according to 4.3.1"""
+        # Send check selection command (0x01)
+        command = 0x01
+        data = selection_number.to_bytes(2, "big")
+        packet = self.create_packet(command, data)
+        response = self.send_packet(packet)
 
-        # According to vending.md, price is a 4-byte value
-        # Convert from cents (or smallest unit) to display currency
-        price_decimal = price_value / 100.0
-        return f"${price_decimal:.2f}"
+        if response and len(response) >= 7:
+            # Verify response: STX(2) + CMD(0x02) + LEN(1) + PackNO(1) + Status(1) + Selection(2)
+            if (
+                response[0:2] == self.STX and response[2] == 0x02
+            ):  # Selection status response
+                status = response[4]
+                return status
+        return None
 
     def process_poll(self):
         """Process POLL command and other incoming data from VMC"""
@@ -242,22 +291,37 @@ class VendingMachine:
 
         # # VMC Select/Cancel Selection command
         if command == VMC_COMMANDS["SELECT_CANCEL"]["code"]:
-            if len(data) >= 7:  # STX(2) + CMD(1) + LEN(1) + PackNO(1) + Selection(2)
-                # The selection number is in bytes 5-6, not 4-6
-                # Because the actual data portion starts after: STX(2) + CMD(1) + LEN(1)
-                # Then we have PackNO(1) followed by the selection number(2)
-                selection_number = int.from_bytes(
-                    data[5:7], "big"
-                )  # Changed from data[4:6]
+            if len(data) >= 7:
+                selection_number = int.from_bytes(data[5:7], "big")
 
                 if selection_number == 0:
                     print("\n🚫 SELECTION CANCELLED")
                     self.current_selection = None
                     self.current_price = None
                 else:
-                    # Set current selection
+                    # Set current selection and get price information
                     self.current_selection = selection_number
+                    price = self.get_selection_price(selection_number)
                     print(f"\n🛒 PRODUCT SELECTED: #{selection_number}")
+                    print(
+                        f"   → Price: {self.format_price(price) if price is not None else 'N/A'}"
+                    )
+                    # Send MONEY_RECEIVED (0x27) to VMC and acknowledge
+                    money_received_cmd = VMC_COMMANDS["MONEY_RECEIVED"]["code"]
+                    # Example: Mode=1 (Bill), Amount=price (4 bytes), Card Number omitted
+                    mode = 1
+                    amount_bytes = (price if price is not None else 0).to_bytes(
+                        4, "big"
+                    )
+                    data_bytes = bytes([mode]) + amount_bytes
+                    packet = self.create_packet(money_received_cmd, data_bytes)
+                    self.send_packet(packet)
+                    # Now dispense directly
+                    self.dispense_directly(selection_number)
+
+                    ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
+                    self.serial.write(ack_packet)
+                    # Always acknowledge after handling select/cancel
 
             return True
 
@@ -285,82 +349,6 @@ class VendingMachine:
                 elif status in [0x03, 0x04, 0x06, 0x07]:  # Error codes
                     status_msg = self._get_status_message(status)
                     print(f"\n❌ DISPENSING ERROR: {status_msg}")
-            return True
-
-        # Handle money collection notice
-        elif command == VMC_COMMANDS["MONEY_NOTICE"]["code"]:
-            if len(data) >= 10:  # Ensure we have enough data for the payment info
-                mode = data[4]
-                amount_bytes = data[5:9]
-                amount = (
-                    int.from_bytes(amount_bytes, "big") / 100.0
-                )  # Convert to decimal
-
-                mode_names = {
-                    1: "Bill",
-                    2: "Coin",
-                    3: "IC Card",
-                    4: "Bank Card",
-                    5: "WeChat",
-                    6: "AliPay",
-                    7: "JD Pay",
-                    9: "Union Pay",
-                }
-                mode_name = mode_names.get(mode, "Unknown")
-
-                print(f"\n💰 PAYMENT RECEIVED: {mode_name} - Amount: ${amount:.2f}")
-                self.payment_amount = amount
-
-                # If we have a current product selected and price available, show how much more is needed
-                if (
-                    self.current_selection
-                    and self.current_price
-                    and amount < self.current_price
-                ):
-                    remaining = self.current_price - amount
-                    print(f"   Still needed: ${remaining/100.0:.2f}")
-            return True
-
-        # Handle current amount report
-        elif command == VMC_COMMANDS["CURRENT_AMOUNT"]["code"]:
-            if len(data) >= 9:
-                amount_bytes = data[4:8]
-                amount = int.from_bytes(amount_bytes, "big") / 100.0
-
-                if amount > 0:
-                    print(f"\n💲 CURRENT BALANCE: ${amount:.2f}")
-            return True
-
-        # Handle selection information
-        elif command == VMC_COMMANDS["SELECTION_INFO"]["code"]:
-            if len(data) >= 12:  # Make sure we have enough data
-                # Extract the selection number
-                selection_number = int.from_bytes(data[4:6], "big")
-                # Extract the price (4 bytes)
-                price_bytes = data[6:10]
-                price_value = int.from_bytes(price_bytes, "big")
-                # Extract inventory and other details
-                inventory = data[10]
-                capacity = data[11]
-                product_id = (
-                    int.from_bytes(data[12:14], "big") if len(data) >= 14 else 0
-                )
-                status = data[14] if len(data) >= 15 else 0
-
-                # Store price in our cache
-                self.product_prices[selection_number] = price_value
-
-                # Display product info if debug is enabled
-                if self.debug:
-                    print(f"\nℹ️ PRODUCT INFO: #{selection_number}")
-                    print(f"   Price: {self.format_price(price_value)}")
-                    print(f"   Inventory: {inventory}/{capacity}")
-                    print(f"   Product ID: {product_id}")
-                    print(f"   Status: {'Normal' if status == 0 else 'Paused'}")
-
-                # Store current price if this matches our current selection
-                if self.current_selection == selection_number:
-                    self.current_price = price_value
             return True
 
         # For all other commands, only print if debug is enabled
@@ -408,3 +396,64 @@ class VendingMachine:
         if self.serial.is_open:
             self.serial.close()
             self._debug_print("Serial connection closed")
+
+    def dispense_directly(self, selection_number, drop_sensor=1, elevator=1):
+        """Dispense product directly using command 0x06 (DIRECT_DRIVE)"""
+        command = VMC_COMMANDS["DIRECT_DRIVE"]["code"]
+        # Data: [drop_sensor (1)] + [elevator (1)] + [selection_number (2)]
+        data = bytes([drop_sensor, elevator]) + selection_number.to_bytes(2, "big")
+        packet = self.create_packet(command, data)
+        response = self.send_packet(packet)
+        if self.debug:
+            print(
+                f"\n>> DISPENSE DIRECTLY: selection={selection_number}, drop_sensor={drop_sensor}, elevator={elevator}"
+            )
+        return response
+
+    def get_selection_price(self, selection_number):
+        """Query selection configuration and return the price for the given selection number using menu command 0x70/0x42. Also try SELECTION_INFO (0x11) if needed. Always acknowledge the response."""
+        MENU_COMMAND = VMC_COMMANDS["MENU_COMMAND"]["code"]
+        CMD_TYPE = 0x42  # Query selection configuration
+        OPERATION = 0x00
+        # Data: [command type 0x42] + [operation 0x00] + [selection number (2 bytes)]
+        data = bytes([CMD_TYPE, OPERATION]) + selection_number.to_bytes(2, "big")
+        packet = self.create_packet(MENU_COMMAND, data)
+        response = self.send_packet(packet)
+        # Always acknowledge menu response if received
+        if response and len(response) >= 5:
+            ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
+            self.serial.write(ack_packet)
+        if response and len(response) >= 13:
+            # Response: [STX(2)] [0x71] [LEN] [PackNO] [0x42] [0x00] [price(4)] ...
+            if (
+                response[2] == VMC_COMMANDS["MENU_RESPONSE"]["code"]
+                and response[4] == CMD_TYPE
+                and response[5] == OPERATION
+            ):
+                price_bytes = response[6:10]
+                price = int.from_bytes(price_bytes, "big")
+                return price
+        # If menu command did not work, try to get price from SELECTION_INFO (0x11)
+        # This assumes the VMC sends selection info after dispensing
+        # Wait for a SELECTION_INFO packet and parse price
+        for _ in range(10):
+            if self.serial.in_waiting:
+                resp = self.serial.read(self.serial.in_waiting)
+                if (
+                    resp
+                    and len(resp) >= 17
+                    and resp[2] == VMC_COMMANDS["SELECTION_INFO"]["code"]
+                ):
+                    # [STX(2)] [0x11] [LEN] [PackNO] [selection(2)] [price(4)] ...
+                    sel = int.from_bytes(resp[4:6], "big")
+                    if sel == selection_number:
+                        price_bytes = resp[6:10]
+                        price = int.from_bytes(price_bytes, "big")
+                        # Always acknowledge selection info
+                        ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
+                        self.serial.write(ack_packet)
+                        return price
+            time.sleep(0.05)
+        if self.debug:
+            print("No valid response for selection config or selection info query.")
+        return None

@@ -95,17 +95,18 @@ You can use the following 3 commands to make the machine dispense products:
 | PackNO+Text | -     | 6 bytes | Communication Number (1) + Mode (1) + Amount (4) + Card Number (optional) |
 
 **Payment Modes:**
-| Mode | Description |
-|------|-------------|
-| 1 | Bill |
-| 2 | Coin |
-| 3 | IC card |
-| 4 | Bank card |
-| 5 | Wechat payment |
-| 6 | Alipay |
-| 7 | Jingdong Pay |
-| 8 | Swallowing money |
-| 9 | Union scan pay |
+
+| Mode | Description      |
+| ---- | ---------------- |
+| 1    | Bill             |
+| 2    | Coin             |
+| 3    | IC card          |
+| 4    | Bank card        |
+| 5    | Wechat payment   |
+| 6    | Alipay           |
+| 7    | Jingdong Pay     |
+| 8    | Swallowing money |
+| 9    | Union scan pay   |
 
 ### 4.1.2 VMC Reports Current Amount (VMC sends out)
 
@@ -126,18 +127,20 @@ You can use the following 3 commands to make the machine dispense products:
 ### 4.1.4 Upper Computer Requests to Give Change (Upper computer sends out)
 
 **Request:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x25 | 1 byte | Change request |
-| Length | 1 | 1 byte | Packet length |
-| PackNO+Text | - | 1 byte | Communication number |
+
+| Field       | Value | Size   | Description          |
+| ----------- | ----- | ------ | -------------------- |
+| Command     | 0x25  | 1 byte | Change request       |
+| Length      | 1     | 1 byte | Packet length        |
+| PackNO+Text | -     | 1 byte | Communication number |
 
 **Response:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x26 | 1 byte | Change response |
-| Length | 9 | 1 byte | Packet length |
-| PackNO+Text | - | 9 bytes | Communication number (1) + bill change (4) + coin change (4) |
+
+| Field       | Value | Size    | Description                                                  |
+| ----------- | ----- | ------- | ------------------------------------------------------------ |
+| Command     | 0x26  | 1 byte  | Change response                                              |
+| Length      | 9     | 1 byte  | Packet length                                                |
+| PackNO+Text | -     | 9 bytes | Communication number (1) + bill change (4) + coin change (4) |
 
 ### 4.1.5 Upper Computer Receives Money (Upper computer sends out)
 
@@ -229,45 +232,48 @@ You can use the following 3 commands to make the machine dispense products:
 ### 4.3.1 Check Selection Status (Upper computer sends out)
 
 **Request:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x01 | 1 byte | Check selection |
-| Length | 4 | 1 byte | Packet length |
-| PackNO+Text | - | 4 bytes | Communication number (1) + selection number (2) |
+
+| Field       | Value | Size    | Description                                     |
+| ----------- | ----- | ------- | ----------------------------------------------- |
+| Command     | 0x01  | 1 byte  | Check selection                                 |
+| Length      | 4     | 1 byte  | Packet length                                   |
+| PackNO+Text | -     | 4 bytes | Communication number (1) + selection number (2) |
 
 **Response:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x02 | 1 byte | Selection status |
-| Length | 4 | 1 byte | Packet length |
-| PackNO+Text | - | 4 bytes | Communication number (1) + status (1) + selection number (2) |
+
+| Field       | Value | Size    | Description                                                  |
+| ----------- | ----- | ------- | ------------------------------------------------------------ |
+| Command     | 0x02  | 1 byte  | Selection status                                             |
+| Length      | 4     | 1 byte  | Packet length                                                |
+| PackNO+Text | -     | 4 bytes | Communication number (1) + status (1) + selection number (2) |
 
 **Status Codes:**
-| Code | Description |
-|------|-------------|
-| 0x01 | Normal |
-| 0x02 | Out of stock |
-| 0x03 | Selection doesn't exist |
-| 0x04 | Selection pause |
-| 0x05 | Product inside elevator |
-| 0x06 | Delivery door unlocked |
-| 0x07 | Elevator error |
-| 0x08 | Elevator self-checking faulty |
-| 0x09 | Microwave oven delivery door closing error |
-| 0x10 | Microwave oven inlet door opening error |
-| 0x11 | Microwave oven inlet door closing error |
-| 0x12 | Didn't detect box lunch |
-| 0x13 | Box lunch is heating |
-| 0x14 | Microwave oven delivery door opening error |
+
+| Code | Description                                    |
+| ---- | ---------------------------------------------- |
+| 0x01 | Normal                                         |
+| 0x02 | Out of stock                                   |
+| 0x03 | Selection doesn't exist                        |
+| 0x04 | Selection pause                                |
+| 0x05 | Product inside elevator                        |
+| 0x06 | Delivery door unlocked                         |
+| 0x07 | Elevator error                                 |
+| 0x08 | Elevator self-checking faulty                  |
+| 0x09 | Microwave oven delivery door closing error     |
+| 0x10 | Microwave oven inlet door opening error        |
+| 0x11 | Microwave oven inlet door closing error        |
+| 0x12 | Didn't detect box lunch                        |
+| 0x13 | Box lunch is heating                           |
+| 0x14 | Microwave oven delivery door opening error     |
 | 0x15 | Please take out the lunch box in the microwave |
-| 0x16 | Staypole return error |
-| 0x17 | Main motor fault |
-| 0x18 | Translation motor fault |
-| 0x19 | Staypole push error |
-| 0x20 | Elevator entering microwave oven error |
-| 0x21 | Elevator exiting microwave oven error |
-| 0x22 | Pushrod pushing error in microwave oven |
-| 0x23 | Pushrod returning error in microwave oven |
+| 0x16 | Staypole return error                          |
+| 0x17 | Main motor fault                               |
+| 0x18 | Translation motor fault                        |
+| 0x19 | Staypole push error                            |
+| 0x20 | Elevator entering microwave oven error         |
+| 0x21 | Elevator exiting microwave oven error          |
+| 0x22 | Pushrod pushing error in microwave oven        |
+| 0x23 | Pushrod returning error in microwave oven      |
 
 ### 4.3.2 Upper Computer Selects to Buy (Upper computer sends out)
 
@@ -286,37 +292,38 @@ You can use the following 3 commands to make the machine dispense products:
 | PackNO+Text | -      | Variable | Communication number (1) + Status (1) + Selection number (2) + Microwave number (1, optional) |
 
 **Dispensing Status Codes:**
-| Code | Description |
-|------|-------------|
-| 0x01 | Dispensing |
-| 0x02 | Dispensing successfully |
-| 0x03 | Selection jammed |
-| 0x04 | Motor doesn't stop normally |
-| 0x06 | Motor doesn't exist |
-| 0x07 | Elevator error |
-| 0x10 | Elevator is ascending |
-| 0x11 | Elevator is descending |
-| 0x12 | Elevator ascending error |
-| 0x13 | Elevator descending error |
-| 0x14 | Microwave delivery door is closing |
-| 0x15 | Microwave delivery door closing error |
-| 0x16 | Microwave inlet door is opening |
-| 0x17 | Microwave inlet door opening error |
-| 0x18 | Pushing lunch box into microwave |
-| 0x19 | Microwave inlet door is closing |
-| 0x20 | Microwave inlet door closing error |
-| 0x21 | Don't detect lunch box in microwave |
-| 0x22 | Lunch box is heating |
-| 0x23 | Lunch box heating remaining time, second |
+
+| Code | Description                                         |
+| ---- | --------------------------------------------------- |
+| 0x01 | Dispensing                                          |
+| 0x02 | Dispensing successfully                             |
+| 0x03 | Selection jammed                                    |
+| 0x04 | Motor doesn't stop normally                         |
+| 0x06 | Motor doesn't exist                                 |
+| 0x07 | Elevator error                                      |
+| 0x10 | Elevator is ascending                               |
+| 0x11 | Elevator is descending                              |
+| 0x12 | Elevator ascending error                            |
+| 0x13 | Elevator descending error                           |
+| 0x14 | Microwave delivery door is closing                  |
+| 0x15 | Microwave delivery door closing error               |
+| 0x16 | Microwave inlet door is opening                     |
+| 0x17 | Microwave inlet door opening error                  |
+| 0x18 | Pushing lunch box into microwave                    |
+| 0x19 | Microwave inlet door is closing                     |
+| 0x20 | Microwave inlet door closing error                  |
+| 0x21 | Don't detect lunch box in microwave                 |
+| 0x22 | Lunch box is heating                                |
+| 0x23 | Lunch box heating remaining time, second            |
 | 0x24 | Please take out the lunch box (successful purchase) |
-| 0x25 | Staypole return error |
-| 0x26 | Microwave delivery door is opening |
-| 0x28 | Staypole push error |
-| 0x29 | Elevator entering microwave oven error |
-| 0x30 | Elevator exiting microwave oven error |
-| 0x31 | Pushrod pushing error in microwave oven |
-| 0x32 | Pushrod retiring error in microwave oven |
-| 0xff | Purchase terminated |
+| 0x25 | Staypole return error                               |
+| 0x26 | Microwave delivery door is opening                  |
+| 0x28 | Staypole push error                                 |
+| 0x29 | Elevator entering microwave oven error              |
+| 0x30 | Elevator exiting microwave oven error               |
+| 0x31 | Pushrod pushing error in microwave oven             |
+| 0x32 | Pushrod retiring error in microwave oven            |
+| 0xff | Purchase terminated                                 |
 
 ### 4.3.4 VMC Selects/Cancels Selection (Both VMC and Upper computer)
 
@@ -344,26 +351,29 @@ You can use the following 3 commands to make the machine dispense products:
 ### 4.3.6 Upper Computer Requests Machine Status (Upper computer sends out)
 
 **Request:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x53 | 1 byte | Status request |
-| Length | 1 | 1 byte | Packet length |
-| PackNO+Text | - | 1 byte | Communication number |
+
+| Field       | Value | Size   | Description          |
+| ----------- | ----- | ------ | -------------------- |
+| Command     | 0x53  | 1 byte | Status request       |
+| Length      | 1     | 1 byte | Packet length        |
+| PackNO+Text | -     | 1 byte | Communication number |
 
 **Response:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x54 | 1 byte | Status response |
-| Length | 1 | 1 byte | Packet length |
-| PackNO+Text | - | Variable | Communication number (1) + status |
+
+| Field       | Value | Size     | Description                       |
+| ----------- | ----- | -------- | --------------------------------- |
+| Command     | 0x54  | 1 byte   | Status response                   |
+| Length      | 1     | 1 byte   | Packet length                     |
+| PackNO+Text | -     | Variable | Communication number (1) + status |
 
 **Machine Status Codes:**
-| Code | Description |
-|------|-------------|
-| 0x00 | Normal |
-| 0x01 | Product in elevator |
-| 0x02 | Delivery door not closed |
-| 0x03 | Elevator error |
+
+| Code | Description                  |
+| ---- | ---------------------------- |
+| 0x00 | Normal                       |
+| 0x01 | Product in elevator          |
+| 0x02 | Delivery door not closed     |
+| 0x03 | Elevator error               |
 | 0x04 | Elevator self-checking error |
 
 ## 4.4 Other Commands
@@ -371,11 +381,12 @@ You can use the following 3 commands to make the machine dispense products:
 ### 4.4.1 Upper Computer Checks IC Card Balance (Upper computer sends out)
 
 **Request:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x61 | 1 byte | Check balance |
-| Length | 1 | 1 byte | Packet length |
-| PackNO+Text | - | 2 bytes | Communication number (1) + Command (1) |
+
+| Field       | Value | Size    | Description                            |
+| ----------- | ----- | ------- | -------------------------------------- |
+| Command     | 0x61  | 1 byte  | Check balance                          |
+| Length      | 1     | 1 byte  | Packet length                          |
+| PackNO+Text | -     | 2 bytes | Communication number (1) + Command (1) |
 
 **Commands:**
 
@@ -383,11 +394,12 @@ You can use the following 3 commands to make the machine dispense products:
 - 2: Cancel to check balance
 
 **Response:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x62 | 1 byte | Balance response |
-| Length | 6 | 1 byte | Packet length |
-| PackNO+Text | - | 6 bytes | Communication number (1) + Status (1) + Balance (4) |
+
+| Field       | Value | Size    | Description                                         |
+| ----------- | ----- | ------- | --------------------------------------------------- |
+| Command     | 0x62  | 1 byte  | Balance response                                    |
+| Length      | 6     | 1 byte  | Packet length                                       |
+| PackNO+Text | -     | 6 bytes | Communication number (1) + Status (1) + Balance (4) |
 
 **Status:**
 
@@ -437,18 +449,20 @@ Upper computer -> Request info synchronization -> VMC
 ### 4.4.5 Upper Computer Requests Machine Status (Upper computer sends out)
 
 **Request:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x51 | 1 byte | Machine status |
-| Length | 1 | 1 byte | Packet length |
-| PackNO+Text | - | 1 byte | Communication number |
+
+| Field       | Value | Size   | Description          |
+| ----------- | ----- | ------ | -------------------- |
+| Command     | 0x51  | 1 byte | Machine status       |
+| Length      | 1     | 1 byte | Packet length        |
+| PackNO+Text | -     | 1 byte | Communication number |
 
 **Response:**
-| Field | Value | Size | Description |
-|-------|-------|------|-------------|
-| Command | 0x52 | 1 byte | Machine status response |
-| Length | Variable | 1 byte | Packet length |
-| PackNO+Text | - | Variable | Communication number + Bill acceptor status + Coin acceptor status + Card reader status + Temperature controller status + Door status + Bill change (4) + Coin change (4) + Machine ID (10) + Machine temperature (8) + Machine humidity (8) |
+
+| Field       | Value    | Size     | Description                                                                                                                                                                                                                                  |
+| ----------- | -------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command     | 0x52     | 1 byte   | Machine status response                                                                                                                                                                                                                      |
+| Length      | Variable | 1 byte   | Packet length                                                                                                                                                                                                                                |
+| PackNO+Text | -        | Variable | Communication number + Bill acceptor status + Coin acceptor status + Card reader status + Temperature controller status + Door status + Bill change (4) + Coin change (4) + Machine ID (10) + Machine temperature (8) + Machine humidity (8) |
 
 ### 4.4.6 Upper Computer Requests VMC Card Deduction
 
@@ -610,7 +624,44 @@ Upper computer -> Request info synchronization -> VMC
 | 0x00         | Read decimal point digit             |
 | 0x01 + Digit | Set decimal point digit (0, 1, or 2) |
 
-### Additional Menu Commands (4.5.11 - 4.5.49)
+### 4.5.11 Query Selection Configuration (Command type: 0x42)
+
+**Parameters:**
+
+| Operation                         | Description                   |
+| --------------------------------- | ----------------------------- |
+| 0x00 + Selection number (2 bytes) | Query selection configuration |
+
+**Response:**
+
+| Field       | Value    | Size     | Description                                                                                                                                                                                                                                                              |
+| ----------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Command     | 0x71     | 1 byte   | Menu response                                                                                                                                                                                                                                                            |
+| Length      | Variable | 1 byte   | Packet length                                                                                                                                                                                                                                                            |
+| PackNO+Text | -        | Variable | Communication number + Command type (0x42) + Operation type (0x00) + Selection price (4 bytes) + Inventory (2 bytes) + Capacity (1 byte) + Product ID (2 bytes) + Selection Mode (1 byte) + Drop sensor status (1 byte) + Jammed set (1 byte) + Turn 1/4 circle (1 byte) |
+
+**Selection Mode Values:**
+
+- 0x01: Coil
+- 0x02: Belt
+- 0x03: Hook
+
+**Drop Sensor Status:**
+
+- 0x00: Enable
+- 0x01: Close
+
+**Jammed Set:**
+
+- 0x00: Can't buy
+- 0x01: Continue service
+
+**Turn 1/4 Circle:**
+
+- 0x00: Close
+- 0x01: Enable
+
+### Additional Menu Commands (4.5.12 - 4.5.49)
 
 The document continues with many more menu commands following the same pattern, including settings for:
 

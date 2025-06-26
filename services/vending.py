@@ -101,14 +101,6 @@ class VendingMachine:
             return response
         return None
 
-    def check_selection(self, selection_number):
-        """Check if a selection is available"""
-        command = VMC_COMMANDS["CHECK_SELECTION"]["code"]
-        data = selection_number.to_bytes(2, "big")
-        packet = self.create_packet(command, data)
-        response = self.send_packet(packet)
-        return self._parse_selection_status(response) if response else None
-
     def _parse_selection_status(self, response):
         """Parse selection status response"""
         if (
@@ -138,7 +130,8 @@ class VendingMachine:
     def _get_status_message(self, status):
         """Convert status code to human readable message"""
         status_messages = {
-            0x01: "Normal",
+            0x00: "Normal",
+            0x01: "Selection pause",
             0x02: "Out of stock",
             0x03: "Selection doesn't exist",
             0x04: "Selection pause",
@@ -204,27 +197,6 @@ class VendingMachine:
 
         return True, "Valid packet"
 
-    def get_product_price(self, selection_number):
-        """Get the price of a product by selection number"""
-        # Check if we have the price cached
-        if selection_number in self.product_prices:
-            return self.product_prices[selection_number]
-
-        # We need to send a command to request selection info
-        # According to vending.md section 4.2.1, we need to use the SELECTION_INFO command
-        # But the protocol doesn't define a direct way for upper computer to request this
-
-        # Instead, we'll use check_selection first to confirm the product exists
-        status = self.check_selection(selection_number)
-        if status != 0x01:  # Not normal
-            return None
-
-        # If the product exists, we'll parse selection info if VMC sends it
-        # This is a placeholder for when we receive the SELECTION_INFO from VMC
-        # The price will be updated when we receive a SELECTION_INFO packet
-
-        return None
-
     def format_price(self, price_value):
         """Format price value into a display string"""
         if price_value is None:
@@ -268,73 +240,25 @@ class VendingMachine:
 
         # Handle specific commands that need to be displayed to the user
 
-        # VMC Select/Cancel Selection command
+        # # VMC Select/Cancel Selection command
         if command == VMC_COMMANDS["SELECT_CANCEL"]["code"]:
-            if (
-                len(data) >= 7
-            ):  # Command(1) + Length(1) + PackNo(1) + Selection(2) + XOR(1)
-                selection_number = int.from_bytes(data[4:6], "big")
+            if len(data) >= 7:  # STX(2) + CMD(1) + LEN(1) + PackNO(1) + Selection(2)
+                # The selection number is in bytes 5-6, not 4-6
+                # Because the actual data portion starts after: STX(2) + CMD(1) + LEN(1)
+                # Then we have PackNO(1) followed by the selection number(2)
+                selection_number = int.from_bytes(
+                    data[5:7], "big"
+                )  # Changed from data[4:6]
 
                 if selection_number == 0:
                     print("\n🚫 SELECTION CANCELLED")
                     self.current_selection = None
                     self.current_price = None
                 else:
-                    # Get product price and details
+                    # Set current selection
                     self.current_selection = selection_number
+                    print(f"\n🛒 PRODUCT SELECTED: #{selection_number}")
 
-                    # Check if selection is valid and get price
-                    status = self.check_selection(selection_number)
-                    if status == 0x01:  # Normal
-                        # Try to get price information
-                        price = self.get_product_price(selection_number)
-                        self.current_price = price
-
-                        if price is not None:
-                            print(
-                                f"\n🛒 PRODUCT SELECTED: #{selection_number} - PRICE: {self.format_price(price)}"
-                            )
-                        else:
-                            print(f"\n🛒 PRODUCT SELECTED: #{selection_number}")
-
-                        if self._selection_callback:
-                            self._selection_callback(selection_number)
-                        else:
-                            # If no callback, process selection immediately
-                            self.handle_selection(selection_number)
-                    else:
-                        status_msg = self._get_status_message(status)
-                        print(f"\n⚠️ SELECTION ERROR #{selection_number}: {status_msg}")
-                        self.current_selection = None
-            return True
-
-        # Process SELECTION_INFO command to get product details
-        elif command == VMC_COMMANDS["SELECTION_INFO"]["code"]:
-            # According to section 4.2.1, selection info includes:
-            # selection number (2) + price (4) + inventory (1) + capacity (1) + product ID (2) + status (1)
-            if len(data) >= 13:  # Including header and packet number
-                selection_number = int.from_bytes(data[4:6], "big")
-                price = int.from_bytes(data[6:10], "big")
-                inventory = data[10]
-                status = data[13]
-
-                # Store price in our price cache
-                self.product_prices[selection_number] = price
-
-                # If this is the current selection, update the displayed price
-                if (
-                    selection_number == self.current_selection
-                    and price != self.current_price
-                ):
-                    self.current_price = price
-                    print(
-                        f"\nℹ️ PRODUCT #{selection_number} PRICE: {self.format_price(price)}"
-                    )
-
-                self._debug_print(
-                    f"Received selection info - Selection: {selection_number}, "
-                    f"Price: {self.format_price(price)}, Inventory: {inventory}"
-                )
             return True
 
         # Handle VMC Dispensing Status command - this indicates dispensing progress
@@ -405,6 +329,38 @@ class VendingMachine:
 
                 if amount > 0:
                     print(f"\n💲 CURRENT BALANCE: ${amount:.2f}")
+            return True
+
+        # Handle selection information
+        elif command == VMC_COMMANDS["SELECTION_INFO"]["code"]:
+            if len(data) >= 12:  # Make sure we have enough data
+                # Extract the selection number
+                selection_number = int.from_bytes(data[4:6], "big")
+                # Extract the price (4 bytes)
+                price_bytes = data[6:10]
+                price_value = int.from_bytes(price_bytes, "big")
+                # Extract inventory and other details
+                inventory = data[10]
+                capacity = data[11]
+                product_id = (
+                    int.from_bytes(data[12:14], "big") if len(data) >= 14 else 0
+                )
+                status = data[14] if len(data) >= 15 else 0
+
+                # Store price in our cache
+                self.product_prices[selection_number] = price_value
+
+                # Display product info if debug is enabled
+                if self.debug:
+                    print(f"\nℹ️ PRODUCT INFO: #{selection_number}")
+                    print(f"   Price: {self.format_price(price_value)}")
+                    print(f"   Inventory: {inventory}/{capacity}")
+                    print(f"   Product ID: {product_id}")
+                    print(f"   Status: {'Normal' if status == 0 else 'Paused'}")
+
+                # Store current price if this matches our current selection
+                if self.current_selection == selection_number:
+                    self.current_price = price_value
             return True
 
         # For all other commands, only print if debug is enabled

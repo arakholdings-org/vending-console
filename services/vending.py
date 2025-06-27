@@ -2,7 +2,7 @@ import serial
 import time
 import threading
 import binascii
-from utils.commands import VMC_COMMANDS
+from utils import VMC_COMMANDS
 
 
 class VendingMachine:
@@ -287,9 +287,7 @@ class VendingMachine:
             ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
             self.serial.write(ack_packet)
 
-        # Handle specific commands that need to be displayed to the user
-
-        # # VMC Select/Cancel Selection command
+        # Handle VMC Select/Cancel Selection command (0x05)
         if command == VMC_COMMANDS["SELECT_CANCEL"]["code"]:
             if len(data) >= 7:
                 selection_number = int.from_bytes(data[5:7], "big")
@@ -299,27 +297,36 @@ class VendingMachine:
                     self.current_selection = None
                     self.current_price = None
                 else:
-                    # Set current selection and get price information using menu command
+                    # Set current selection
                     self.current_selection = selection_number
-                    price = self.query_selection_price_menu(selection_number)
+
+                    # Query price using menu command (0x70/0x42)
+                    price = self.get_selection_price(selection_number)
+
                     print(f"\n🛒 PRODUCT SELECTED: #{selection_number}")
                     print(
                         f"   → Price: {self.format_price(price) if price is not None else 'N/A'}"
                     )
-                    # Send MONEY_RECEIVED (0x27) to VMC and acknowledge
+
+                    # Send MONEY_RECEIVED (0x27) to VMC with the queried price
                     money_received_cmd = VMC_COMMANDS["MONEY_RECEIVED"]["code"]
-                    mode = 1
+                    mode = 1  # Payment mode (1: Bill)
                     amount_bytes = (price if price is not None else 0).to_bytes(
                         4, "big"
                     )
                     data_bytes = bytes([mode]) + amount_bytes
                     packet = self.create_packet(money_received_cmd, data_bytes)
                     self.send_packet(packet)
-                    # Now dispense directly
-                    self.dispense_directly(selection_number)
-                    # Always acknowledge after handling select/cancel
+
                     ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
                     self.serial.write(ack_packet)
+
+                    # Initiate dispensing
+                    self.dispense_directly(selection_number)
+
+                    ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
+                    self.serial.write(ack_packet)
+
             return True
 
         # Handle VMC Dispensing Status command - this indicates dispensing progress
@@ -408,51 +415,42 @@ class VendingMachine:
         return response
 
     def get_selection_price(self, selection_number):
-        """Query selection configuration and return the price for the given selection number using menu command 0x70/0x42. Also try SELECTION_INFO (0x11) if needed. Always acknowledge the response."""
-        MENU_COMMAND = VMC_COMMANDS["MENU_COMMAND"]["code"]
-        CMD_TYPE = 0x42  # Query selection configuration
-        OPERATION = 0x00
-        # Data: [command type 0x42] + [operation 0x00] + [selection number (2 bytes)]
-        data = bytes([CMD_TYPE, OPERATION]) + selection_number.to_bytes(2, "big")
-        packet = self.create_packet(MENU_COMMAND, data)
-        response = self.send_packet(packet)
-        # Always acknowledge menu response if received
-        if response and len(response) >= 5:
-            ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
-            self.serial.write(ack_packet)
+        """
+        Query the price of a selection using menu command 0x70 with sub-command 0x42.
+
+        Args:
+            selection_number (int): The selection ID to query (1-1000)
+
+        Returns:
+            int: Price in smallest currency unit (e.g., cents), or None if failed
+        """
+        # Create the query packet
+        query_packet = self.create_packet(
+            command=VMC_COMMANDS["MENU_COMMAND"]["code"],  # 0x70
+            data=bytes([0x42, 0x00])
+            + selection_number.to_bytes(2, "big"),  # 0x42 (query config) + selection
+        )
+
+        # Send and receive response
+        response = self.send_packet(query_packet)
+
+        ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
+        self.serial.write(ack_packet)
+
+        # Parse valid response (STX + 0x71 + length + PackNO + 0x42 + 0x00 + price(4) + ...)
         if response and len(response) >= 13:
-            # Response: [STX(2)] [0x71] [LEN] [PackNO] [0x42] [0x00] [price(4)] ...
             if (
-                response[2] == VMC_COMMANDS["MENU_RESPONSE"]["code"]
-                and response[4] == CMD_TYPE
-                and response[5] == OPERATION
-            ):
-                price_bytes = response[6:10]
-                price = int.from_bytes(price_bytes, "big")
-                return price
-        # If menu command did not work, try to get price from SELECTION_INFO (0x11)
-        # This assumes the VMC sends selection info after dispensing
-        # Wait for a SELECTION_INFO packet and parse price
-        for _ in range(10):
-            if self.serial.in_waiting:
-                resp = self.serial.read(self.serial.in_waiting)
-                if (
-                    resp
-                    and len(resp) >= 17
-                    and resp[2] == VMC_COMMANDS["SELECTION_INFO"]["code"]
-                ):
-                    # [STX(2)] [0x11] [LEN] [PackNO] [selection(2)] [price(4)] ...
-                    sel = int.from_bytes(resp[4:6], "big")
-                    if sel == selection_number:
-                        price_bytes = resp[6:10]
-                        price = int.from_bytes(price_bytes, "big")
-                        # Always acknowledge selection info
-                        ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
-                        self.serial.write(ack_packet)
-                        return price
-            time.sleep(0.05)
+                response[0:2] == self.STX
+                and response[2] == VMC_COMMANDS["MENU_RESPONSE"]["code"]  # 0x71
+                and response[4] == 0x42  # Should match our query type
+                and response[5] == 0x00
+            ):  # Should match our operation type
+
+                # Extract price (4 bytes starting at position 6)
+                return int.from_bytes(response[6:10], "big")
+
         if self.debug:
-            print("No valid response for selection config or selection info query.")
+            print(f"Failed to get price for selection {selection_number}")
         return None
 
     def create_menu_packet(self, command_type, params=None):
@@ -474,26 +472,8 @@ class VendingMachine:
         self.packet_number = (self.packet_number % 255) + 1
         return packet
 
-    def query_selection_price_menu(self, selection_number):
-        """Query the price of a selection using the menu command (0x70/0x42) as per protocol."""
-        command_type = 0x42  # QUERY_SELECTION_CONFIG
-        # Operation 0x00 + selection number (2 bytes)
-        params = bytes([0x00]) + selection_number.to_bytes(2, "big")
-        packet = self.create_menu_packet(command_type, params)
-        response = self.send_packet(packet)
-        # Always acknowledge menu response if received
-        if response and len(response) >= 13:
-            ack_packet = self.create_packet(VMC_COMMANDS["ACK"]["code"])
-            self.serial.write(ack_packet)
-            # Response: [STX(2)] [0x71] [LEN] [PackNO] [0x42] [0x00] [price(4)] ...
-            if (
-                response[2] == VMC_COMMANDS["MENU_RESPONSE"]["code"]
-                and response[4] == command_type
-                and response[5] == 0x00
-            ):
-                price_bytes = response[6:10]
-                price = int.from_bytes(price_bytes, "big")
-                return price
-        if self.debug:
-            print("No valid menu response for selection price query.")
-        return None
+    def format_price(self, price):
+        """Format price in cents to dollars"""
+        if price is None:
+            return "N/A"
+        return f"${price/100:.2f}"

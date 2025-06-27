@@ -26,10 +26,6 @@ def main():
         vending = VendingMachine(debug=True)
         print("Successfully connected to vending machine")
 
-        # Set up selection callback
-        vending.set_selection_callback(handle_vmc_selection)
-
-        print("\nStarting communication with vending machine...")
         # Start polling thread
         vending.start_polling()
 

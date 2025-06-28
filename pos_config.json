@@ -1,6 +1,6 @@
 {
-    "port": "/dev/USBtty0",
-    "baudrate": 57600,
+    "port": "COM1",
+    "baudrate": 9600,
     "currency": "USD,ZiG",
     "accepted_payments": [
         "card",
@@ -8,5 +8,5 @@
     ],
     "esocket_host": "127.0.0.1",
     "esocket_port": 23001,
-    "esocket_terminal_id": "ARAVON01"
+    "esocket_terminal_id": "ARAVON10"
 }

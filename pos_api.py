@@ -1,13 +1,14 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from pos_config import POSConfig
+from pos_messages import parse_response, dispatch_response, build_transaction
 import logging
+from pos_tcp_client import POSTcpClient
 
 app = FastAPI()
 config = POSConfig()
-
-serial_bridge = None
+tcp_client = POSTcpClient(config.get("esocket_host"), config.get("esocket_port"))
 
 class PaymentRequest(BaseModel):
     amount: float
@@ -16,9 +17,6 @@ class PaymentRequest(BaseModel):
 class PaymentStatusResponse(BaseModel):
     status: str
     detail: Optional[str] = None
-
-class VMCMessage(BaseModel):
-    raw: str
 
 payments = {}
 
@@ -29,6 +27,13 @@ def start_payment(req: PaymentRequest):
     payment_id = f"pay_{len(payments)+1}"
     payments[payment_id] = {"status": "pending", "amount": req.amount, "method": req.method}
     logging.info(f"Payment started: {payment_id}")
+
+    # Build and send transaction message over TCP
+    message = build_transaction(req.amount, config.get("esocket_terminal_id"), payment_id, config.get("currency")[0])
+    tcp_client.send_message(message)
+    response = tcp_client.receive_message()
+    parsed = parse_response(response)
+    dispatch_response(parsed)
     return PaymentStatusResponse(status="pending", detail=f"Payment started with id {payment_id}")
 
 @app.get("/payment/status/{payment_id}", response_model=PaymentStatusResponse)
@@ -46,23 +51,3 @@ def complete_payment(payment_id: str):
     payment["status"] = "completed"
     logging.info(f"Payment completed: {payment_id}")
     return PaymentStatusResponse(status="completed", detail="Payment completed successfully")
-
-@app.post("/pos/response")
-async def pos_response(request: Request):
-    data = await request.body()
-    if serial_bridge:
-        serial_bridge.send_to_vmc(data)
-        logging.info("POS response forwarded to VMC")
-    return {"status": "forwarded"}
-
-@app.post("/vmc/message")
-def vmc_message(msg: VMCMessage):
-    logging.info(f"Received from VMC (via SerialBridge): {msg.raw}")
-    return {"status": "received"}
-@app.post("/vmc/message")
-def vmc_message(msg: VMCMessage):
-    # This endpoint receives messages from VMC via SerialBridge
-    # Here you can parse, log, and forward to POS or update session/payment status
-    logging.info(f"Received from VMC (via SerialBridge): {msg.raw}")
-    # Example: update payment status or notify POS
-    return {"status": "received"}

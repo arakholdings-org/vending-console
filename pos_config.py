@@ -12,13 +12,13 @@ class POSConfig:
         else:
             currencies = ["USD", "ZiG"]
         self.settings = {
-            "port": os.getenv("SERIAL_PORT", "/dev/USBtty0"),
-            "baudrate": int(os.getenv("SERIAL_BAUDRATE", "57600")),
+            "port": os.getenv("SERIAL_PORT", "COM1"),  # Default to COM1 for RS232 MiniPC
+            "baudrate": int(os.getenv("SERIAL_BAUDRATE", "9600")),  # 9600 for RS232
             "currency": currencies,
             "accepted_payments": ["card", "ecocash"],
             "esocket_host": os.getenv("ESOCKET_HOST", "127.0.0.1"),
             "esocket_port": int(os.getenv("ESOCKET_PORT", "23001")),
-            "esocket_terminal_id": os.getenv("ESOCKET_TERMINAL_ID", "ARAVON01"),
+            "esocket_terminal_id": os.getenv("ESOCKET_TERMINAL_ID", "ARAVON10"),
             # Add more default settings as needed
         }
         self.load()

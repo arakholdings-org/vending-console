@@ -640,26 +640,7 @@ Upper computer -> Request info synchronization -> VMC
 | Length      | Variable | 1 byte   | Packet length                                                                                                                                                                                                                                                            |
 | PackNO+Text | -        | Variable | Communication number + Command type (0x42) + Operation type (0x00) + Selection price (4 bytes) + Inventory (2 bytes) + Capacity (1 byte) + Product ID (2 bytes) + Selection Mode (1 byte) + Drop sensor status (1 byte) + Jammed set (1 byte) + Turn 1/4 circle (1 byte) |
 
-**Selection Mode Values:**
-
-- 0x01: Coil
-- 0x02: Belt
-- 0x03: Hook
-
-**Drop Sensor Status:**
-
-- 0x00: Enable
-- 0x01: Close
-
-**Jammed Set:**
-
-- 0x00: Can't buy
-- 0x01: Continue service
-
-**Turn 1/4 Circle:**
-
-- 0x00: Close
-- 0x01: Enable
+> **Note:** The software must handle the menu response (0x71) for selection configuration queries (command type 0x42, operation 0x00) by parsing the response data fields as described above.
 
 ### Additional Menu Commands (4.5.12 - 4.5.49)
 

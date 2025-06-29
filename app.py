@@ -19,7 +19,7 @@ def handle_vmc_selection(selection_number):
 def main():
     vending = None
     try:
-        print("\n==== Vending Machine Console ====\n")
+
         print("Connecting to vending machine...")
 
         # Initialize vending machine with debug enabled for better error diagnosis
@@ -37,7 +37,6 @@ def main():
 
         # Keep the main thread running while handling exceptions in the background
         while True:
-            time.sleep(0.1)
 
             # Check if poll thread is still alive, restart if needed
             if vending.poll_thread is not None and not vending.poll_thread.is_alive():

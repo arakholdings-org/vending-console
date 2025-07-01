@@ -162,6 +162,8 @@ class VendingMachine:
             self._handle_poll(payload)
         elif cmd == VMC_COMMANDS["SELECTION_INFO"]["code"]:
             self._handle_selection_info(payload)
+        elif cmd == VMC_COMMANDS["SELECTION_STATUS"]["code"]:
+            self._handle_selection_status_response(payload)
         elif cmd == VMC_COMMANDS["DISPENSING_STATUS"]["code"]:
             self._handle_dispensing_status(payload)
         elif cmd == VMC_COMMANDS["SELECT_CANCEL"]["code"]:
@@ -210,10 +212,85 @@ class VendingMachine:
                 self.dispensing_active = False
         else:
             self.current_selection = selection
-            self._start_dispensing(selection)
+            print(f"\n📦 Selection #{selection} received - checking availability...")
+            # Start the proper flow: check status → get product info → payment → dispensing
+            self._initiate_purchase_flow(selection)
+
+    def _initiate_purchase_flow(self, selection):
+        """Initiate the complete purchase flow: check status → get product info → payment → dispensing"""
+        # Step 1: Check selection status first
+        self._debug_print(f"Step 1: Checking status for selection #{selection}")
+        self.check_selection(selection)
+
+    def _handle_selection_status_response(self, payload):
+        """Handle the response from CHECK_SELECTION command"""
+        if len(payload) < 4:
+            self._debug_print("Invalid SELECTION_STATUS packet length")
+            return
+
+        status = payload[1]
+        selection = int.from_bytes(payload[2:4], "big")
+
+        self._debug_print(f"Selection #{selection} status: {status}")
+
+        if status == 0x01:  # Normal - product available
+            print(f"✅ Product #{selection} is available")
+            # Step 2: Get product info from database
+            self._get_product_info_from_database(selection)
+        elif status == 0x02:  # Out of stock
+            print(f"❌ Product #{selection} is out of stock")
+            self._cancel_current_selection()
+        elif status == 0x03:  # Selection doesn't exist
+            print(f"❌ Selection #{selection} doesn't exist")
+            self._cancel_current_selection()
+        elif status == 0x04:  # Selection pause
+            print(f"⏸️ Selection #{selection} is paused")
+            self._cancel_current_selection()
+        else:
+            print(f"⚠️ Selection #{selection} has error status: {status}")
+            self._cancel_current_selection()
+
+    def _get_product_info_from_database(self, selection):
+        """Get product information from database (currently just logging)"""
+        self._debug_print(
+            f"Step 2: Getting product info for selection #{selection} from database"
+        )
+
+        # TODO: Replace with actual database query
+        # For now, just log the operation
+        print(f"📋 Getting product info for selection #{selection}...")
+        print(f"   - Fetching price from database...")
+        print(f"   - Fetching inventory count from database...")
+        print(f"   - Fetching product details from database...")
+
+        # Simulate database response - in real implementation, check actual availability
+        product_available = True  # This should come from database query
+
+        if product_available:
+            print(f"💰 Product #{selection} info retrieved successfully")
+            # Step 3: Process payment
+            self._process_payment_for_selection(selection)
+        else:
+            print(f"❌ Product #{selection} not found in database")
+            self._cancel_current_selection()
+
+    def _process_payment_for_selection(self, selection):
+        """Process payment for the selected product"""
+        self._debug_print(f"Step 3: Processing payment for selection #{selection}")
+
+        # Start the dispensing process with payment handling
+        self._start_dispensing(selection)
+
+    def _cancel_current_selection(self):
+        """Cancel the current selection and send cancel command to VMC"""
+        if self.current_selection:
+            selection = self.current_selection
+            self.current_selection = None
+            print(f"🚫 Cancelling selection #{selection}")
+            self.cancel_selection()
 
     def _handle_dispensing_status(self, payload):
-        """Process DISPENSING_STATUS (0x04) packet with retry logic"""
+        """Process DISPENSING_STATUS (0x04) packet without retry logic"""
         if len(payload) < 2:
             self._debug_print("Invalid DISPENSING_STATUS packet length")
             return
@@ -226,42 +303,33 @@ class VendingMachine:
             0x00: f"🎉 Product #{selection} dispensed successfully!",
             0x01: f"🔄 Product #{selection} dispensing...",
             0x02: f"🎉 Product #{selection} dispensed successfully!",
-            0x03: f"❌ Product #{selection} selection jammed",
-            0x04: f"⚠️ Product #{selection} motor error",
-            0x06: f"⚠️ Product #{selection} motor doesn't exist",
-            0x07: f"⚠️ Product #{selection} elevator error",
+            0x03: f"❌ Product #{selection} selection jammed - dispensing cancelled",
+            0x04: f"❌ Product #{selection} motor error - dispensing cancelled",
+            0x06: f"❌ Product #{selection} motor doesn't exist - dispensing cancelled",
+            0x07: f"❌ Product #{selection} elevator error - dispensing cancelled",
             0xFF: f"❌ Product #{selection} purchase terminated",
         }
 
         success = status_code == 0x02
 
         message = status_messages.get(
-            status_code, f"Unknown status code: {status_code}"
+            status_code, f"❌ Unknown error (code: {status_code}) - dispensing cancelled"
         )
         print(message)
 
-        # Handle retries for errors that might be recoverable
+        # Handle dispensing completion
         with self.dispense_lock:
-            if not success and self.dispensing_active and (status_code in [0x03, 0x04]):
-                # Selection jammed or motor error - retry
-                self.dispense_retry_count += 1
-                if self.dispense_retry_count < self.max_dispense_retries:
-                    print(
-                        f"⏳ Retry attempt {self.dispense_retry_count}/{self.max_dispense_retries}..."
-                    )
-                    # Schedule a retry after acknowledging
-                    threading.Thread(
-                        target=self._retry_dispensing, args=(selection,), daemon=True
-                    ).start()
-                else:
-                    print("❌ Maximum retry attempts reached. Please contact support.")
-                    self.dispensing_active = False
-            elif status_code == 0x01:
+            if status_code == 0x01:
                 # Still dispensing, wait for next status update
                 pass
-            else:
-                # Either success or a non-retryable error
+            elif success:
+                # Successful dispensing
                 self.dispensing_active = False
+                print(f"✅ Transaction completed for product #{selection}")
+            else:
+                # Any error - cancel dispensing immediately
+                self.dispensing_active = False
+                print(f"🚫 Dispensing cancelled for product #{selection}. Please contact support if needed.")
 
         # If dispensing is complete (success or failure), reset current selection
         if not self.dispensing_active:
@@ -288,25 +356,23 @@ class VendingMachine:
     def _handle_payment(self, selection):
         """Wait for 2 seconds and then drive dispensing manually with retry logic"""
         try:
-            self._debug_print("Processing payment for selection #", selection)
+            self._debug_print(f"Step 4: Processing payment for selection #{selection}")
+            print(f"💳 Processing payment for product #{selection}...")
             time.sleep(2)  # Simulate payment processing delay
 
             self._debug_print(
-                "Payment successfully verified for selection #", selection
+                f"Payment successfully verified for selection #{selection}"
             )
+            print(f"✅ Payment verified for product #{selection}")
+
+            # Step 5: Start dispensing
+            self._debug_print(f"Step 5: Starting dispensing for selection #{selection}")
             self.direct_drive_selection(selection, True, True)
 
         except Exception as e:
             self._debug_print(f"Error during payment: {str(e)}")
             with self.dispense_lock:
                 self.dispensing_active = False
-
-    def _retry_dispensing(self, selection):
-        """Wait briefly and retry dispensing"""
-        time.sleep(1)  # Wait a second before retry
-        if self.dispensing_active and self.current_selection == selection:
-            print(f"🔄 Retrying dispensing for product #{selection}...")
-            self.direct_drive_selection(selection, True, True)
 
     def queue_command(self, command_name, data=None):
         """Queue a command to be sent when next POLL is received"""

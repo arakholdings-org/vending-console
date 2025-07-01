@@ -1,0 +1,8 @@
+# Vending machine USB device
+SUBSYSTEM=="tty", ATTRS{idVendor}=="VENDOR_ID", ATTRS{idProduct}=="PRODUCT_ID", MODE="0666", GROUP="dialout"
+
+# Or for all USB serial devices (less secure but simpler)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="*", MODE="0666", GROUP="dialout"
+
+# Or specifically for ttyUSB devices
+KERNEL=="ttyUSB*", MODE="0666", GROUP="dialout"

@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
 import time
+import signal
 from services import VendingMachine
 
 
 def main():
+    print("🧃 Vending Machine Console")
+    print("=========================")
+
+    # Initialize the vending machine
     vm = VendingMachine(port="/dev/ttyUSB0", debug=True)
+
+    def signal_handler(sig, frame):
+        print("\n\nShutting down gracefully...")
+        vm.close()
+        exit(0)
+
+    # Set up signal handler for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
 
     try:
         print("Connecting to vending machine...")
         vm.connect()
-        print("Ready to receive selection info...")
+        print("Connected! Machine is ready.")
+        print("\nWaiting for selections...")
+        print("(Products will automatically be dispensed after payment verification)")
+        print("Press Ctrl+C to exit.")
 
         # Keep running until interrupted
         while True:

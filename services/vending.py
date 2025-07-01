@@ -1,7 +1,9 @@
 import threading
 import time
+from queue import Empty, Queue
+
 import serial
-from queue import Queue, Empty
+
 from utils import VMC_COMMANDS
 
 
@@ -15,34 +17,17 @@ class VendingMachine:
         self.serial = None
         self.poll_thread = None
         self.current_selection = None
-        self.product_info = {}
-        self._response_queue = Queue()
         self._command_lock = threading.Lock()
         self.recv_buffer = bytearray()
+        self.command_queue = []
+        self.dispense_lock = threading.Lock()
+        self.dispensing_active = False
+        self.dispense_retry_count = 0
+        self.max_dispense_retries = 3
 
     def _debug_print(self, *args):
         if self.debug:
             print(*args)
-
-    def create_packet(self, command, data=None):
-        """Create a protocol-compliant packet with XOR checksum"""
-        packet = self.STX + bytes([command])
-
-        if data:
-            packet += bytes([len(data) + 1])  # +1 for packet number
-            packet += bytes([self.packet_number]) + data
-        else:
-            packet += bytes([1]) + bytes([self.packet_number])  # Just packet number
-
-        # Calculate XOR
-        xor = 0
-        for b in packet:
-            xor ^= b
-        packet += bytes([xor])
-
-        # Increment packet number (1-255)
-        self.packet_number = (self.packet_number % 255) + 1
-        return packet
 
     def connect(self):
         """Establish connection and initialize communication"""
@@ -72,6 +57,35 @@ class VendingMachine:
         if self.serial and self.serial.is_open:
             self.serial.close()
         self._debug_print("Connection closed")
+
+    def create_packet(self, command, data=None):
+        """Create a protocol-compliant packet with XOR checksum"""
+        packet = self.STX + bytes([command])
+
+        if data:
+            packet += bytes([len(data) + 1])  # +1 for packet number
+            packet += bytes([self.packet_number]) + data
+        else:
+            packet += bytes([1]) + bytes([self.packet_number])  # Just packet number
+
+        # Calculate XOR
+        xor = 0
+        for b in packet:
+            xor ^= b
+        packet += bytes([xor])
+
+        # Increment packet number (1-255)
+        self.packet_number = (self.packet_number % 255) + 1
+        return packet
+
+    def _send_command(self, command, data=None):
+        """Send a command"""
+        with self._command_lock:
+            packet = self.create_packet(command, data)
+            self.serial.write(packet)
+            self.serial.flush()
+            self._debug_print(f"Sent: {packet.hex(' ').upper()}")
+            return True
 
     def _communication_loop(self):
         """Main communication handling loop"""
@@ -134,61 +148,52 @@ class VendingMachine:
         cmd = packet[2]
         payload = packet[4:-1]  # Skip STX, CMD, LEN, XOR
 
-        # Always ACK non-ACK packets (Section 2)
-        if cmd != VMC_COMMANDS["ACK"]["code"]:
-            self._send_command(VMC_COMMANDS["ACK"]["code"])
+        # Log packet information
+        cmd_name = next(
+            (k for k, v in VMC_COMMANDS.items() if v["code"] == cmd),
+            f"UNKNOWN_CMD_{cmd:02X}",
+        )
+        self._debug_print(
+            f"Received: {cmd_name} ({cmd:02X}), Payload: {payload.hex(' ').upper() if payload else 'none'}"
+        )
 
         # Handle specific commands
-        handler_map = {
-            VMC_COMMANDS["SELECTION_INFO"]["code"]: self._handle_selection_info,
-            VMC_COMMANDS["SELECT_CANCEL"]["code"]: self._handle_selection_cancel,
-            VMC_COMMANDS["DISPENSING_STATUS"]["code"]: self._handle_dispensing_status,
-            VMC_COMMANDS["POLL"]["code"]: self._handle_poll,
-        }
+        if cmd == VMC_COMMANDS["POLL"]["code"]:
+            self._handle_poll(payload)
+        elif cmd == VMC_COMMANDS["SELECTION_INFO"]["code"]:
+            self._handle_selection_info(payload)
+        elif cmd == VMC_COMMANDS["DISPENSING_STATUS"]["code"]:
+            self._handle_dispensing_status(payload)
+        elif cmd == VMC_COMMANDS["SELECT_CANCEL"]["code"]:
+            self._handle_selection_cancel(payload)
+        elif cmd != VMC_COMMANDS["ACK"]["code"]:
+            # For any other non-ACK packet, respond with ACK
+            self._send_command(VMC_COMMANDS["ACK"]["code"])
 
-        handler = handler_map.get(cmd)
-        if handler:
-            handler(payload)
+    def _handle_poll(self, payload):
+        """Process POLL (0x41) packet and respond within 100ms"""
+        self._debug_print("Received POLL from VMC")
 
-    def _send_command(self, command, data=None, timeout=1.0):
-        """Send a command and wait for response"""
-        with self._command_lock:
-            packet = self.create_packet(command, data)
-            self.serial.write(packet)
-            self.serial.flush()
-            self._debug_print(f"Sent: {packet.hex(' ').upper()}")
-            # For most commands, just return after sending (no response expected)
-            # If you want to wait for a response, use self._response_queue.get(timeout=timeout)
-            return True
+        if self.command_queue:
+            # Get next command to send
+            next_cmd = self.command_queue.pop(0)
+            if isinstance(next_cmd, tuple):
+                cmd_code, data = next_cmd
+                self._send_command(cmd_code, data)
+            else:
+                self._send_command(next_cmd)
+        else:
+            # Just respond with ACK if no pending commands
+            self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     def _handle_selection_info(self, payload):
         """Process SELECTION_INFO (0x11) packet"""
-        if len(payload) < 12:
+        if len(payload) < 7:
             self._debug_print("Invalid SELECTION_INFO packet length")
             return
 
-        selection = int.from_bytes(payload[1:3], "big")
-        price = int.from_bytes(payload[3:7], "big")
-        inventory = payload[7]
-        capacity = payload[8]
-        product_id = int.from_bytes(payload[9:11], "big")
-        status = payload[11]
-
-        self.product_info[selection] = {
-            "price": price,
-            "inventory": inventory,
-            "capacity": capacity,
-            "product_id": product_id,
-            "status": status,
-        }
-
-        # Ensure all values are numeric for formatting
-        print(
-            f"\n[UPDATE] Selection #{selection}: "
-            f"Price: {float(price)/100:.2f} "
-            f"Stock: {int(inventory)}/{int(capacity)} "
-            f"(Status: {self._get_status_name(status)})"
-        )
+        # Acknowledge receipt of selection info
+        self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     def _handle_selection_cancel(self, payload):
         """Process SELECT/CANCEL (0x05) packet"""
@@ -200,63 +205,146 @@ class VendingMachine:
         if selection == 0:
             self.current_selection = None
             print("\n🚫 Selection cancelled")
+            # Clear any ongoing dispensing
+            with self.dispense_lock:
+                self.dispensing_active = False
         else:
             self.current_selection = selection
-            info = self.product_info.get(selection, {})
-            price = info.get("price", 0)
-            inventory = info.get("inventory", 0)
-            capacity = info.get("capacity", 0)
-            # Ensure all values are numeric for formatting
-            print(
-                f"\n🛒 Selected #{selection}: "
-                f"{float(price)/100:.2f} "
-                f"({int(inventory)}/{int(capacity)})"
-            )
+            self._start_dispensing(selection)
 
     def _handle_dispensing_status(self, payload):
-        """Process DISPENSING_STATUS (0x04) packet"""
-        if len(payload) < 3:
+        """Process DISPENSING_STATUS (0x04) packet with retry logic"""
+        if len(payload) < 2:
             self._debug_print("Invalid DISPENSING_STATUS packet length")
             return
 
-        status = payload[1]
-        selection = int.from_bytes(payload[2:4], "big") if len(payload) >= 4 else 0
+        status_code = payload[1]
+        selection = self.current_selection
 
+        # Update status codes according to documentation section 4.3.3
         status_messages = {
-            0x02: f"✅ Dispensed #{selection} successfully",
-            0xFF: f"❌ Failed to dispense #{selection}",
-            0x03: f"⚠️ Selection #{selection} jammed",
-            0x04: f"⚠️ Motor didn't stop normally for #{selection}",
+            0x00: f"🎉 Product #{selection} dispensed successfully!",
+            0x01: f"🔄 Product #{selection} dispensing...",
+            0x02: f"🎉 Product #{selection} dispensed successfully!",
+            0x03: f"❌ Product #{selection} selection jammed",
+            0x04: f"⚠️ Product #{selection} motor error",
+            0x06: f"⚠️ Product #{selection} motor doesn't exist",
+            0x07: f"⚠️ Product #{selection} elevator error",
+            0xFF: f"❌ Product #{selection} purchase terminated",
         }
 
-        if status in status_messages:
-            print(f"\n{status_messages[status]}")
-        else:
-            print(f"\nUnknown dispensing status {status:02X} for #{selection}")
+        success = status_code == 0x02
 
-    def _handle_poll(self, payload):
-        """Process POLL (0x41) packet"""
-        self._debug_print("Received POLL from VMC")
-        # According to protocol, upper computer should respond within 100ms
+        message = status_messages.get(
+            status_code, f"Unknown status code: {status_code}"
+        )
+        print(message)
+
+        # Handle retries for errors that might be recoverable
+        with self.dispense_lock:
+            if not success and self.dispensing_active and (status_code in [0x03, 0x04]):
+                # Selection jammed or motor error - retry
+                self.dispense_retry_count += 1
+                if self.dispense_retry_count < self.max_dispense_retries:
+                    print(
+                        f"⏳ Retry attempt {self.dispense_retry_count}/{self.max_dispense_retries}..."
+                    )
+                    # Schedule a retry after acknowledging
+                    threading.Thread(
+                        target=self._retry_dispensing, args=(selection,), daemon=True
+                    ).start()
+                else:
+                    print("❌ Maximum retry attempts reached. Please contact support.")
+                    self.dispensing_active = False
+            elif status_code == 0x01:
+                # Still dispensing, wait for next status update
+                pass
+            else:
+                # Either success or a non-retryable error
+                self.dispensing_active = False
+
+        # If dispensing is complete (success or failure), reset current selection
+        if not self.dispensing_active:
+            self.current_selection = None
+
+        # Acknowledge receipt of dispensing status
         self._send_command(VMC_COMMANDS["ACK"]["code"])
 
-    def _get_status_name(self, status_code):
-        """Convert status code to human-readable name"""
-        statuses = {
-            0x00: "Normal",
-            0x01: "Paused",
-            0x02: "Out of Stock",
-            0x03: "Does Not Exist",
-            0x04: "Error",
-        }
-        return statuses.get(status_code, f"Unknown ({hex(status_code)})")
+    def _start_dispensing(self, selection):
+        """Start the dispensing process with proper thread management"""
+        # Make sure we're not already dispensing
+        with self.dispense_lock:
+            if self.dispensing_active:
+                self._debug_print("Dispensing already in progress, ignoring request")
+                return
+            self.dispensing_active = True
+            self.dispense_retry_count = 0
 
-    def request_selection_info(self, selection_number):
-        """Request specific selection info (using menu command)"""
-        if not 1 <= selection_number <= 1000:
-            raise ValueError("Selection number must be 1-1000")
+        # Start the dispensing thread
+        threading.Thread(
+            target=self._handle_payment, args=(selection,), daemon=True
+        ).start()
 
-        # Use menu command 0x70 with sub-command 0x42
-        data = bytes([0x42, 0x00]) + selection_number.to_bytes(2, "big")
-        self._send_command(VMC_COMMANDS["MENU_COMMAND"]["code"], data)
-        # If you
+    def _handle_payment(self, selection):
+        """Wait for 2 seconds and then drive dispensing manually with retry logic"""
+        try:
+            self._debug_print("Processing payment for selection #", selection)
+            time.sleep(2)  # Simulate payment processing delay
+
+            self._debug_print(
+                "Payment successfully verified for selection #", selection
+            )
+            self.direct_drive_selection(selection, True, True)
+
+        except Exception as e:
+            self._debug_print(f"Error during payment: {str(e)}")
+            with self.dispense_lock:
+                self.dispensing_active = False
+
+    def _retry_dispensing(self, selection):
+        """Wait briefly and retry dispensing"""
+        time.sleep(1)  # Wait a second before retry
+        if self.dispensing_active and self.current_selection == selection:
+            print(f"🔄 Retrying dispensing for product #{selection}...")
+            self.direct_drive_selection(selection, True, True)
+
+    def queue_command(self, command_name, data=None):
+        """Queue a command to be sent when next POLL is received"""
+        if command_name in VMC_COMMANDS:
+            cmd_code = VMC_COMMANDS[command_name]["code"]
+            if data:
+                self.command_queue.append((cmd_code, data))
+            else:
+                self.command_queue.append(cmd_code)
+            self._debug_print(f"Command {command_name} queued for next POLL")
+            return True
+        else:
+            self._debug_print(f"Unknown command: {command_name}")
+            return False
+
+    def check_selection(self, selection_number):
+        """Queue a command to check selection status"""
+        data = selection_number.to_bytes(2, byteorder="big")
+        return self.queue_command("CHECK_SELECTION", data)
+
+    def buy_selection(self, selection_number):
+        """Queue a command to buy a selection"""
+        data = selection_number.to_bytes(2, byteorder="big")
+        return self.queue_command("SELECT_TO_BUY", data)
+
+    def direct_drive_selection(
+        self, selection_number, use_drop_sensor=True, use_elevator=True
+    ):
+        """Queue a command to directly drive a selection motor"""
+        data = bytes([1 if use_drop_sensor else 0, 1 if use_elevator else 0])
+        data += selection_number.to_bytes(2, byteorder="big")
+        return self.queue_command("DIRECT_DRIVE", data)
+
+    def cancel_selection(self):
+        """Queue a command to cancel current selection"""
+        data = (0).to_bytes(2, byteorder="big")
+        return self.queue_command("SELECT_CANCEL", data)
+
+    def request_machine_status(self):
+        """Queue a command to request machine status"""
+        return self.queue_command("MACHINE_STATUS_REQ")

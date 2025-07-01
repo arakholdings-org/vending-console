@@ -138,7 +138,7 @@ VMC_COMMANDS = {
     },
     "MENU_RESPONSE": {
         "code": 0x71,
-        "description": "Menu response",
+        "description": "Menu response (used for selection configuration query and other menu operations)",
     },
 }
 
@@ -154,5 +154,5 @@ MENU_COMMAND_TYPES = {
     "MACHINE_ID": 0x08,
     "SYSTEM_TIME": 0x09,
     "DECIMAL_POINT": 0x10,
-    "QUERY_SELECTION_CONFIG": 0x42,
+    "QUERY_SELECTION_CONFIG": 0x42,  # Used for querying selection configuration
 }

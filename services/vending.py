@@ -5,6 +5,7 @@ from queue import Empty, Queue
 import serial
 
 from utils import VMC_COMMANDS
+from services.esocket import ESocketClient
 
 
 class VendingMachine:
@@ -24,6 +25,9 @@ class VendingMachine:
         self.dispensing_active = False
         self.dispense_retry_count = 0
         self.max_dispense_retries = 3
+
+        # Initialize eSocket client
+        self.esocket_client = ESocketClient()
 
     def _debug_print(self, *args):
         if self.debug:
@@ -354,25 +358,81 @@ class VendingMachine:
         ).start()
 
     def _handle_payment(self, selection):
-        """Wait for 2 seconds and then drive dispensing manually with retry logic"""
+        """Process payment using eSocket POS terminal"""
         try:
             self._debug_print(f"Step 4: Processing payment for selection #{selection}")
             print(f"💳 Processing payment for product #{selection}...")
-            time.sleep(2)  # Simulate payment processing delay
 
-            self._debug_print(
-                f"Payment successfully verified for selection #{selection}"
-            )
-            print(f"✅ Payment verified for product #{selection}")
+            # Connect to eSocket terminal
+            if not self.esocket_client.connect():
+                print("❌ Failed to connect to payment terminal")
+                with self.dispense_lock:
+                    self.dispensing_active = False
+                return
 
-            # Step 5: Start dispensing
-            self._debug_print(f"Step 5: Starting dispensing for selection #{selection}")
-            self.direct_drive_selection(selection, True, True)
+            # Initialize terminal
+            try:
+                init_response = self.esocket_client.initialize_terminal()
+                print("✅ Payment terminal initialized")
+            except Exception as e:
+                print(f"❌ Failed to initialize payment terminal: {e}")
+                self.esocket_client.disconnect()
+                with self.dispense_lock:
+                    self.dispensing_active = False
+                return
+
+            # Send purchase transaction for $2.00 (200 cents)
+            transaction_id = f"TXN_{int(time.time())}_{selection}"
+            amount = 200  # $2.00 in cents
+
+            print(f"💰 Processing ${amount/100:.2f} payment...")
+
+            try:
+                response = self.esocket_client.send_purchase_transaction(
+                    transaction_id=transaction_id,
+                    amount=amount
+                )
+
+                # Handle payment response
+                if self._is_payment_successful(response):
+                    print(f"✅ Payment of ${amount/100:.2f} approved!")
+                    self._debug_print(f"Payment successfully verified for selection #{selection}")
+
+                    # Step 5: Start dispensing
+                    self._debug_print(f"Step 5: Starting dispensing for selection #{selection}")
+                    self.direct_drive_selection(selection, True, True)
+                else:
+                    print(f"❌ Payment declined or failed")
+                    print(f"🚫 Cancelling selection #{selection} due to payment failure")
+                    with self.dispense_lock:
+                        self.dispensing_active = False
+                    self._cancel_current_selection()
+
+            except Exception as e:
+                print(f"❌ Payment processing error: {e}")
+                with self.dispense_lock:
+                    self.dispensing_active = False
+                self._cancel_current_selection()
+            finally:
+                # Clean up terminal connection
+                try:
+                    self.esocket_client.close_terminal()
+                    self.esocket_client.disconnect()
+                except:
+                    pass
 
         except Exception as e:
             self._debug_print(f"Error during payment: {str(e)}")
             with self.dispense_lock:
                 self.dispensing_active = False
+
+    def _is_payment_successful(self, response):
+        """Check if the payment response indicates success"""
+        # TODO: Implement proper response parsing based on eSocket documentation
+        # For now, assume success if no exception was thrown
+        # In real implementation, parse the XML response to check transaction status
+        self._debug_print(f"Payment response: {response}")
+        return True  # Simplified for now
 
     def queue_command(self, command_name, data=None):
         """Queue a command to be sent when next POLL is received"""

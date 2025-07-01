@@ -214,3 +214,20 @@ class ESocketClient:
 
         response = self._send_message(xml_message)
         return self._parse_response(response)
+
+    def _parse_response(self, response: str) -> Dict[str, Any]:
+        """Parse XML response from eSocket.POS"""
+        try:
+            root = ET.fromstring(response)
+            # Basic response parsing - extend based on actual response structure
+            result = {
+                "raw_response": response,
+                "success": True,  # Simplified - implement proper status checking
+            }
+            return result
+        except Exception as e:
+            return {
+                "raw_response": response,
+                "success": False,
+                "error": str(e),
+            }

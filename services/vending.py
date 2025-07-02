@@ -17,7 +17,6 @@ class VendingMachine:
         self.running = False
         self.serial = None
         self.poll_thread = None
-        self.payment_thread = None
         self.current_selection = None
         self._command_lock = threading.Lock()
         self.recv_buffer = bytearray()
@@ -37,7 +36,6 @@ class VendingMachine:
         # Thread management
         self.threads = {
             "poll": None,
-            "payment": None,
             "monitor": None,
         }
 
@@ -337,63 +335,42 @@ class VendingMachine:
                 )
 
     def _handle_payment(self, selection):
-        """Process payment using separate thread to avoid blocking POLL responses"""
+        """Process payment synchronously instead of using a separate thread"""
+        try:
+            if not self.esocket_connected:
+                print("⚠️ Payment terminal not connected, attempting to reconnect...")
+                self._initialize_esocket()
 
-        # Prevent multiple payment processes for the same selection
-        if (
-            hasattr(self, "payment_thread")
-            and self.payment_thread
-            and self.payment_thread.is_alive()
-        ):
-            self._debug_print("Payment already in progress, ignoring duplicate request")
-            return
+            # Generate transaction ID
+            timestamp_mod = int(time.time()) % 900000
+            transaction_id = str(100000 + timestamp_mod)[:6]
 
-        def payment_worker():
-            try:
-                if not self.esocket_connected:
-                    print(
-                        "⚠️ Payment terminal not connected, attempting to reconnect..."
-                    )
-                    self._initialize_esocket()
+            amount = 200  # $2.00 in cents
+            print(f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})")
 
-                # Generate transaction ID
-                timestamp_mod = int(time.time()) % 900000
-                transaction_id = str(100000 + timestamp_mod)[:6]
-
-                amount = 200  # $2.00 in cents
-                print(
-                    f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})"
+            with self._command_lock:  # Prevent concurrent payment processing
+                response = self.esocket_client.send_purchase_transaction(
+                    transaction_id=transaction_id, amount=amount
                 )
 
-                with self._command_lock:  # Prevent concurrent payment processing
-                    response = self.esocket_client.send_purchase_transaction(
-                        transaction_id=transaction_id, amount=amount
-                    )
-
-                    if self._is_payment_successful(response):
-                        print(f"✅ Payment approved!")
-                        with self.dispense_lock:
-                            if (
-                                self.current_selection == selection
-                            ):  # Verify selection hasn't changed
-                                self.dispensing_active = True
-                                self.direct_drive_selection(selection, True, True)
-                            else:
-                                print("❌ Selection changed during payment processing")
-                                self._cancel_current_selection()
+            if self._is_payment_successful(response):
+                print("✅ Payment approved!")
+                with self.dispense_lock:
+                    if (
+                        self.current_selection == selection
+                    ):  # Verify selection hasn't changed
+                        self.dispensing_active = True
+                        self.direct_drive_selection(selection, True, True)
                     else:
-                        print("❌ Payment declined")
+                        print("❌ Selection changed during payment processing")
                         self._cancel_current_selection()
-
-            except Exception as e:
-                print(f"❌ Payment error: {e}")
+            else:
+                print("❌ Payment declined")
                 self._cancel_current_selection()
-            finally:
-                self.payment_thread = None  # Clear the thread reference
 
-        # Start payment processing in separate thread
-        self.payment_thread = threading.Thread(target=payment_worker, daemon=True)
-        self.payment_thread.start()
+        except Exception as e:
+            print(f"❌ Payment error: {e}")
+            self._cancel_current_selection()
 
     def _handle_dispensing_status(self, payload):
         """Process DISPENSING_STATUS (0x04) packet"""

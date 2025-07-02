@@ -7,5 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "paho-mqtt>=2.1.0",
     "pyserial>=3.5",
+    "pyserial-asyncio>=0.6",
     "tinydb>=4.8.2",
 ]

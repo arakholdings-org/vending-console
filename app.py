@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 import asyncio
 import signal
-from services import VendingMachine
+from services.vending import VendingMachine
+
+
+async def shutdown(signal, vm):
+    """Handle shutdown gracefully"""
+    print(f"\nReceived {signal.name}, shutting down...")
+    await vm.close()
 
 
 async def main():
@@ -11,29 +17,29 @@ async def main():
     # Initialize the vending machine
     vm = VendingMachine(port="/dev/ttyUSB0", debug=True)
 
-    def signal_handler():
-        print("\n\nShutting down gracefully...")
-        asyncio.create_task(vm.close())
-
-    # Set up signal handler for graceful shutdown
-    loop = asyncio.get_event_loop()
-    for signame in {"SIGINT", "SIGTERM"}:
-        loop.add_signal_handler(getattr(signal, signame), signal_handler)
+    # Set up signal handlers
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, vm)))
 
     try:
         await vm.connect()
 
-        # Keep running until interrupted
+        # Keep running until shutdown
         while True:
             await asyncio.sleep(1)
 
-    except KeyboardInterrupt:
-        print("\nShutting down...")
+    except asyncio.CancelledError:
+        print("\nShutdown completed")
     except Exception as e:
         print(f"Error: {e}")
     finally:
-        await vm.close()
+        if vm.running:
+            await vm.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutdown by user")

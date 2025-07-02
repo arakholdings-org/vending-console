@@ -17,16 +17,42 @@ class VendingMachine:
         self.running = False
         self.serial = None
         self.poll_thread = None
+        self.payment_thread = None
         self.current_selection = None
         self._command_lock = threading.Lock()
         self.recv_buffer = bytearray()
-        self.command_queue = []
         self.dispense_lock = threading.Lock()
         self.dispensing_active = False
+
+        # Initialize queues
+        self.command_queue = Queue()
+        self.payment_queue = Queue()
+        self.status_queue = Queue()
 
         # Initialize eSocket client
         self.esocket_client = ESocketClient()
         self.esocket_connected = False
+
+        # Thread management
+        self.threads = {
+            "poll": None,
+            "payment": None,
+            "monitor": None,
+        }
+
+        # State management
+        self.state = {
+            "machine": "idle",
+            "payment": "idle",
+            "dispensing": False,
+        }
+
+        # Timeouts
+        self.timeouts = {
+            "poll": 0.1,  # 100ms
+            "payment": 30.0,  # 30s
+            "dispense": 60.0,  # 60s
+        }
 
     def _debug_print(self, *args):
         if self.debug:
@@ -84,7 +110,7 @@ class VendingMachine:
             self.poll_thread.join(timeout=1)
         if self.serial and self.serial.is_open:
             self.serial.close()
-        
+
         # Close eSocket connection
         if self.esocket_connected:
             try:
@@ -92,7 +118,7 @@ class VendingMachine:
                 self.esocket_client.disconnect()
             except:
                 pass
-        
+
         self._debug_print("Connection closed")
 
     def create_packet(self, command, data=None):
@@ -125,14 +151,24 @@ class VendingMachine:
             return True
 
     def _communication_loop(self):
-        """Main communication handling loop"""
+        """Main communication handling loop with timeout"""
+        last_poll_time = time.time()
+
         while self.running:
             try:
+                # Check if we missed polls
+                current_time = time.time()
+                if current_time - last_poll_time > 0.5:  # 500ms without poll
+                    self._debug_print("Warning: Possible missed POLL")
+
                 data = self.serial.read(1024)
                 if data:
                     self.recv_buffer.extend(data)
                     self._process_incoming_data()
-                time.sleep(0.01)
+                    last_poll_time = current_time
+
+                time.sleep(0.01)  # 10ms sleep to prevent CPU thrashing
+
             except Exception as e:
                 self._debug_print(f"Communication error: {str(e)}")
                 break
@@ -190,7 +226,6 @@ class VendingMachine:
             (k for k, v in VMC_COMMANDS.items() if v["code"] == cmd),
             f"UNKNOWN_CMD_{cmd:02X}",
         )
-    
 
         # Handle specific commands
         if cmd == VMC_COMMANDS["POLL"]["code"]:
@@ -207,18 +242,19 @@ class VendingMachine:
 
     def _handle_poll(self, payload):
         """Process POLL (0x41) packet and respond within 100ms"""
-       
-
-        if self.command_queue:
-            # Get next command to send
-            next_cmd = self.command_queue.pop(0)
-            if isinstance(next_cmd, tuple):
-                cmd_code, data = next_cmd
-                self._send_command(cmd_code, data)
+        try:
+            if self.command_queue:
+                next_cmd = self.command_queue.pop(0)
+                if isinstance(next_cmd, tuple):
+                    cmd_code, data = next_cmd
+                    self._send_command(cmd_code, data)
+                else:
+                    self._send_command(next_cmd)
             else:
-                self._send_command(next_cmd)
-        else:
-            # Just respond with ACK if no pending commands
+                self._send_command(VMC_COMMANDS["ACK"]["code"])
+        except Exception as e:
+            self._debug_print(f"Poll handling error: {e}")
+            # Always try to send ACK even if command fails
             self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     def _handle_selection_info(self, payload):
@@ -250,59 +286,45 @@ class VendingMachine:
             self._handle_payment(selection)
 
     def _handle_payment(self, selection):
-        """Process payment using eSocket POS terminal"""
-        try:
-            print(f"💳 Processing payment for product #{selection}...")
+        """Process payment using separate thread to avoid blocking POLL responses"""
 
-            # Check if eSocket is connected, if not try to reconnect
-            if not self.esocket_connected:
-                print("⚠️ Payment terminal not connected, attempting to reconnect...")
-                self._initialize_esocket()
-                
-                if not self.esocket_connected:
-                    print("❌ Payment terminal connection failed")
-                    with self.dispense_lock:
-                        self.dispensing_active = False
-                    self._cancel_current_selection()
-                    return
-
-            # Generate valid transaction ID: 6 numeric digits, not starting with 0
-            timestamp_mod = int(time.time()) % 900000  # Get last 6 digits max 899999
-            transaction_id = str(100000 + timestamp_mod)[:6]  # Ensure 6 digits, starts with 1
-            
-            amount = 200  # $2.00 in cents
-
-            print(f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})")
-
+        def payment_worker():
             try:
+                if not self.esocket_connected:
+                    print(
+                        "⚠️ Payment terminal not connected, attempting to reconnect..."
+                    )
+                    self._initialize_esocket()
+
+                # Generate transaction ID
+                timestamp_mod = int(time.time()) % 900000
+                transaction_id = str(100000 + timestamp_mod)[:6]
+
+                amount = 200  # $2.00 in cents
+                print(
+                    f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})"
+                )
+
                 response = self.esocket_client.send_purchase_transaction(
                     transaction_id=transaction_id, amount=amount
                 )
 
-                # Handle payment response
                 if self._is_payment_successful(response):
-                    print(f"✅ Payment of ${amount/100:.2f} approved!")
-                    # Start dispensing
+                    print(f"✅ Payment approved!")
                     with self.dispense_lock:
                         self.dispensing_active = True
                     self.direct_drive_selection(selection, True, True)
                 else:
-                    print(f"❌ Payment declined or failed")
-                    print(f"� Cancelling selection #{selection} due to payment failure")
-                    with self.dispense_lock:
-                        self.dispensing_active = False
+                    print("❌ Payment declined")
                     self._cancel_current_selection()
 
             except Exception as e:
-                print(f"❌ Payment processing error: {e}")
-                with self.dispense_lock:
-                    self.dispensing_active = False
+                print(f"❌ Payment error: {e}")
                 self._cancel_current_selection()
 
-        except Exception as e:
-            self._debug_print(f"Error during payment: {str(e)}")
-            with self.dispense_lock:
-                self.dispensing_active = False
+        # Start payment processing in separate thread
+        self.payment_thread = threading.Thread(target=payment_worker, daemon=True)
+        self.payment_thread.start()
 
     def _handle_dispensing_status(self, payload):
         """Process DISPENSING_STATUS (0x04) packet"""
@@ -370,9 +392,9 @@ class VendingMachine:
             # Check if response contains success indicators
             if isinstance(response, dict):
                 # Check for success flag
-                if response.get('success', False):
+                if response.get("success", False):
                     # Parse the XML response to check for approval
-                    raw_response = response.get('raw_response', '')
+                    raw_response = response.get("raw_response", "")
                     if 'ActionCode="APPROVE"' in raw_response:
                         return True
                     elif 'ActionCode="DECLINE"' in raw_response:
@@ -384,14 +406,14 @@ class VendingMachine:
                             print(f"Payment declined: {error_msg}")
                         return False
                 return False
-            
+
             # If response is a string, check for approval indicators
             if isinstance(response, str):
                 return 'ActionCode="APPROVE"' in response
-                
+
             self._debug_print(f"Payment response: {response}")
             return False
-            
+
         except Exception as e:
             self._debug_print(f"Error parsing payment response: {e}")
             return False

@@ -20,12 +20,8 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        print("Connecting to vending machine...")
+
         vm.connect()
-        print("Connected! Machine is ready.")
-        print("\nWaiting for selections...")
-        print("(Products will automatically be dispensed after payment verification)")
-        print("Press Ctrl+C to exit.")
 
         # Keep running until interrupted
         while True:

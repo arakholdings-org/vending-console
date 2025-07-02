@@ -3,6 +3,7 @@ import struct
 import xml.etree.ElementTree as ET
 import json
 import os
+import time
 from typing import Any, Dict
 
 
@@ -12,6 +13,9 @@ class ESocketClient:
         self.port = port
         self.socket = None
         self.terminal_id = None
+        self.is_connected = False
+        self.reconnect_attempts = 3  # Add reconnection attempts
+        self.reconnect_delay = 2  # seconds
 
     def _load_terminal_id_from_config(self) -> str:
         """Load terminal ID from config.json"""
@@ -35,52 +39,91 @@ class ESocketClient:
             header += struct.pack(">I", message_length)
             return header
 
-    def _send_message(self, xml_message: str) -> str:
-        """Send XML message with proper TCP header"""
-        message_bytes = xml_message.encode("utf-8")
-        header = self._create_message_header(len(message_bytes))
-
-        # Send header + message
-        self.socket.sendall(header + message_bytes)
-
-        # Read response header
-        response_header = self.socket.recv(2)
-        if len(response_header) < 2:
-            raise Exception("Failed to read response header")
-
-        # Parse header to get message length
-        if response_header == b"\xff\xff":
-            # Six-byte header
-            length_bytes = self.socket.recv(4)
-            response_length = struct.unpack(">I", length_bytes)[0]
-        else:
-            # Two-byte header
-            response_length = response_header[0] * 256 + response_header[1]
-
-        # Read response message
-        response_data = self.socket.recv(response_length)
-        return response_data.decode("utf-8")
-
     def connect(self) -> bool:
-        """Establish TCP connection to eSocket.POS"""
+        """Establish TCP connection to eSocket.POS with retry logic"""
+        for attempt in range(self.reconnect_attempts):
+            try:
+                if self.socket:
+                    self.disconnect()  # Clean up any existing connection
+
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.settimeout(10)  # Add timeout
+                self.socket.connect((self.host, self.port))
+                self.is_connected = True
+                return True
+            except Exception as e:
+                print(f"Connection attempt {attempt + 1} failed: {e}")
+                if attempt < self.reconnect_attempts - 1:
+                    time.sleep(self.reconnect_delay)
+                continue
+        self.is_connected = False
+        return False
+
+    def _send_message(self, xml_message: str) -> str:
+        """Send XML message with timeout handling"""
+        if not self.is_connected:
+            if not self.connect():
+                raise Exception("Not connected to eSocket.POS")
+
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect((self.host, self.port))
-            return True
-        except Exception as e:
-            print(f"Connection failed: {e}")
-            return False
+            # Set timeout for operations
+            self.socket.settimeout(30)  # 30 seconds timeout
+
+            message_bytes = xml_message.encode("utf-8")
+            header = self._create_message_header(len(message_bytes))
+
+            # Send header + message with error checking
+            total_sent = 0
+            while total_sent < len(header + message_bytes):
+                sent = self.socket.send((header + message_bytes)[total_sent:])
+                if sent == 0:
+                    raise Exception("Socket connection broken")
+                total_sent += sent
+
+            # Read response header with timeout
+            response_header = self.socket.recv(2)
+            if len(response_header) < 2:
+                raise Exception("Failed to read response header")
+
+            # Parse header to get message length
+            if response_header == b"\xff\xff":
+                # Six-byte header
+                length_bytes = self.socket.recv(4)
+                response_length = struct.unpack(">I", length_bytes)[0]
+            else:
+                # Two-byte header
+                response_length = response_header[0] * 256 + response_header[1]
+
+            # Read response message
+            response_data = self.socket.recv(response_length)
+            return response_data.decode("utf-8")
+        except socket.timeout:
+            self.is_connected = False
+            raise Exception("Operation timed out")
+        except socket.error as e:
+            self.is_connected = False
+            raise Exception(f"Socket error: {e}")
 
     def disconnect(self):
-        """Close connection"""
-        if self.socket:
-            self.socket.close()
+        """Close connection with proper cleanup"""
+        try:
+            if self.socket:
+                self.socket.shutdown(socket.SHUT_RDWR)  # Properly shutdown socket
+                self.socket.close()
+        except Exception as e:
+            print(f"Error during disconnect: {e}")
+        finally:
             self.socket = None
+            self.is_connected = False
+            self.terminal_id = None  # Reset terminal ID on disconnect
 
     def initialize_terminal(
         self, terminal_id: str = None, register_callbacks: bool = True
     ) -> Dict[str, Any]:
         """Initialize terminal with eSocket.POS"""
+        if not self.is_connected and not self.connect():
+            raise Exception("Cannot initialize terminal - not connected")
+
         if terminal_id is None:
             terminal_id = self._load_terminal_id_from_config()
 
@@ -130,29 +173,52 @@ class ESocketClient:
         return self._parse_response(response)
 
     def close_terminal(self) -> Dict[str, Any]:
-        """Close terminal session"""
-        root = ET.Element(
-            "Esp:Interface",
-            {
-                "Version": "1.0",
-                "xmlns:Esp": "http://www.mosaicsoftware.com/Postilion/eSocket.POS/",
-            },
-        )
+        """Close terminal session with proper cleanup"""
+        if not self.is_connected:
+            return {"success": True, "message": "Already disconnected"}
 
-        ET.SubElement(
-            root,
-            "Esp:Admin",
-            {
-                "TerminalId": self.terminal_id,
-                "Action": "CLOSE",
-            },
-        )
+        try:
+            # Create XML root element
+            root = ET.Element(
+                "Esp:Interface",
+                {
+                    "Version": "1.0",
+                    "xmlns:Esp": "http://www.mosaicsoftware.com/Postilion/eSocket.POS/",
+                },
+            )
 
-        xml_message = ET.tostring(root, encoding="unicode")
-        xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_message}'
+            # Add Admin element with CLOSE action
+            ET.SubElement(
+                root,
+                "Esp:Admin",
+                {
+                    "TerminalId": self.terminal_id,
+                    "Action": "CLOSE",
+                },
+            )
 
-        response = self._send_message(xml_message)
-        return self._parse_response(response)
+            # Convert to proper XML string with declaration
+            xml_message = ET.tostring(root, encoding="unicode")
+            xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_message}'
+
+            # Send close message and get response
+            response = self._send_message(xml_message)
+
+            # Parse and validate response
+            parsed_response = self._parse_response(response)
+
+            # Check if close was successful
+            if (
+                parsed_response.get("success")
+                and 'ActionCode="APPROVE"' in parsed_response.get("raw_response", "")
+            ):
+                self.disconnect()  # Ensure we disconnect after closing
+                return parsed_response
+            else:
+                raise Exception("Terminal close failed: " + str(parsed_response))
+        except Exception as e:
+            self.disconnect()  # Always try to disconnect on error
+            raise Exception(f"Failed to close terminal: {str(e)}")
 
     def send_purchase_transaction(
         self, transaction_id: str, amount: int, currency_code: str = "840"

@@ -345,7 +345,7 @@ class VendingMachine:
             timestamp_mod = int(time.time()) % 900000
             transaction_id = str(100000 + timestamp_mod)[:6]
 
-            amount = 200  # $2.00 in cents
+            amount = 100  # $2.00 in cents
             print(f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})")
 
             with self._command_lock:  # Prevent concurrent payment processing

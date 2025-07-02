@@ -23,11 +23,10 @@ class VendingMachine:
         self.command_queue = []
         self.dispense_lock = threading.Lock()
         self.dispensing_active = False
-        self.dispense_retry_count = 0
-        self.max_dispense_retries = 3
 
         # Initialize eSocket client
         self.esocket_client = ESocketClient()
+        self.esocket_connected = False
 
     def _debug_print(self, *args):
         if self.debug:
@@ -49,9 +48,34 @@ class VendingMachine:
         )
         self.poll_thread.start()
 
+        # Initialize eSocket connection synchronously
+        self._initialize_esocket()
+
         # Initial synchronization (Section 4.4.4)
         self._send_command(VMC_COMMANDS["SYNC_INFO"]["code"])
         self._debug_print("Connection established and synchronized")
+
+    def _initialize_esocket(self):
+        """Initialize eSocket connection synchronously"""
+        try:
+            print("🔌 Connecting to payment terminal...")
+            if self.esocket_client.connect():
+                print("✅ Connected to payment terminal")
+                try:
+                    self.esocket_client.initialize_terminal()
+                    self.esocket_connected = True
+                    print("✅ Payment terminal initialized successfully")
+                    self._debug_print("eSocket connection established")
+                except Exception as e:
+                    print(f"❌ Failed to initialize payment terminal: {e}")
+                    self.esocket_connected = False
+                    # Keep connection for retry
+            else:
+                print("❌ Failed to connect to payment terminal")
+                self.esocket_connected = False
+        except Exception as e:
+            print(f"❌ Payment terminal connection error: {e}")
+            self.esocket_connected = False
 
     def close(self):
         """Clean shutdown"""
@@ -60,6 +84,15 @@ class VendingMachine:
             self.poll_thread.join(timeout=1)
         if self.serial and self.serial.is_open:
             self.serial.close()
+        
+        # Close eSocket connection
+        if self.esocket_connected:
+            try:
+                self.esocket_client.close_terminal()
+                self.esocket_client.disconnect()
+            except:
+                pass
+        
         self._debug_print("Connection closed")
 
     def create_packet(self, command, data=None):
@@ -157,17 +190,13 @@ class VendingMachine:
             (k for k, v in VMC_COMMANDS.items() if v["code"] == cmd),
             f"UNKNOWN_CMD_{cmd:02X}",
         )
-        self._debug_print(
-            f"Received: {cmd_name} ({cmd:02X}), Payload: {payload.hex(' ').upper() if payload else 'none'}"
-        )
+    
 
         # Handle specific commands
         if cmd == VMC_COMMANDS["POLL"]["code"]:
             self._handle_poll(payload)
         elif cmd == VMC_COMMANDS["SELECTION_INFO"]["code"]:
             self._handle_selection_info(payload)
-        elif cmd == VMC_COMMANDS["SELECTION_STATUS"]["code"]:
-            self._handle_selection_status_response(payload)
         elif cmd == VMC_COMMANDS["DISPENSING_STATUS"]["code"]:
             self._handle_dispensing_status(payload)
         elif cmd == VMC_COMMANDS["SELECT_CANCEL"]["code"]:
@@ -178,7 +207,7 @@ class VendingMachine:
 
     def _handle_poll(self, payload):
         """Process POLL (0x41) packet and respond within 100ms"""
-        self._debug_print("Received POLL from VMC")
+       
 
         if self.command_queue:
             # Get next command to send
@@ -216,85 +245,67 @@ class VendingMachine:
                 self.dispensing_active = False
         else:
             self.current_selection = selection
-            print(f"\n📦 Selection #{selection} received - checking availability...")
-            # Start the proper flow: check status → get product info → payment → dispensing
-            self._initiate_purchase_flow(selection)
+            print(f"\n📦 Selection #{selection} received - processing payment...")
+            # Directly handle payment after selection
+            self._handle_payment(selection)
 
-    def _initiate_purchase_flow(self, selection):
-        """Initiate the complete purchase flow: check status → get product info → payment → dispensing"""
-        # Step 1: Check selection status first
-        self._debug_print(f"Step 1: Checking status for selection #{selection}")
-        self.check_selection(selection)
+    def _handle_payment(self, selection):
+        """Process payment using eSocket POS terminal"""
+        try:
+            print(f"💳 Processing payment for product #{selection}...")
 
-    def _handle_selection_status_response(self, payload):
-        """Handle the response from CHECK_SELECTION command"""
-        if len(payload) < 4:
-            self._debug_print("Invalid SELECTION_STATUS packet length")
-            return
+            # Check if eSocket is connected, if not try to reconnect
+            if not self.esocket_connected:
+                print("⚠️ Payment terminal not connected, attempting to reconnect...")
+                self._initialize_esocket()
+                
+                if not self.esocket_connected:
+                    print("❌ Payment terminal connection failed")
+                    with self.dispense_lock:
+                        self.dispensing_active = False
+                    self._cancel_current_selection()
+                    return
 
-        status = payload[1]
-        selection = int.from_bytes(payload[2:4], "big")
+            # Generate valid transaction ID: 6 numeric digits, not starting with 0
+            timestamp_mod = int(time.time()) % 900000  # Get last 6 digits max 899999
+            transaction_id = str(100000 + timestamp_mod)[:6]  # Ensure 6 digits, starts with 1
+            
+            amount = 200  # $2.00 in cents
 
-        self._debug_print(f"Selection #{selection} status: {status}")
+            print(f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})")
 
-        if status == 0x01:  # Normal - product available
-            print(f"✅ Product #{selection} is available")
-            # Step 2: Get product info from database
-            self._get_product_info_from_database(selection)
-        elif status == 0x02:  # Out of stock
-            print(f"❌ Product #{selection} is out of stock")
-            self._cancel_current_selection()
-        elif status == 0x03:  # Selection doesn't exist
-            print(f"❌ Selection #{selection} doesn't exist")
-            self._cancel_current_selection()
-        elif status == 0x04:  # Selection pause
-            print(f"⏸️ Selection #{selection} is paused")
-            self._cancel_current_selection()
-        else:
-            print(f"⚠️ Selection #{selection} has error status: {status}")
-            self._cancel_current_selection()
+            try:
+                response = self.esocket_client.send_purchase_transaction(
+                    transaction_id=transaction_id, amount=amount
+                )
 
-    def _get_product_info_from_database(self, selection):
-        """Get product information from database (currently just logging)"""
-        self._debug_print(
-            f"Step 2: Getting product info for selection #{selection} from database"
-        )
+                # Handle payment response
+                if self._is_payment_successful(response):
+                    print(f"✅ Payment of ${amount/100:.2f} approved!")
+                    # Start dispensing
+                    with self.dispense_lock:
+                        self.dispensing_active = True
+                    self.direct_drive_selection(selection, True, True)
+                else:
+                    print(f"❌ Payment declined or failed")
+                    print(f"� Cancelling selection #{selection} due to payment failure")
+                    with self.dispense_lock:
+                        self.dispensing_active = False
+                    self._cancel_current_selection()
 
-        # TODO: Replace with actual database query
-        # For now, just log the operation
-        print(f"📋 Getting product info for selection #{selection}...")
-        print(f"   - Fetching price from database...")
-        print(f"   - Fetching inventory count from database...")
-        print(f"   - Fetching product details from database...")
+            except Exception as e:
+                print(f"❌ Payment processing error: {e}")
+                with self.dispense_lock:
+                    self.dispensing_active = False
+                self._cancel_current_selection()
 
-        # Simulate database response - in real implementation, check actual availability
-        product_available = True  # This should come from database query
-
-        if product_available:
-            print(f"💰 Product #{selection} info retrieved successfully")
-            # Step 3: Process payment
-            self._process_payment_for_selection(selection)
-        else:
-            print(f"❌ Product #{selection} not found in database")
-            self._cancel_current_selection()
-
-    def _process_payment_for_selection(self, selection):
-        """Process payment for the selected product"""
-        self._debug_print(f"Step 3: Processing payment for selection #{selection}")
-
-        # Start the dispensing process with payment handling
-        self._start_dispensing(selection)
-
-    def _cancel_current_selection(self):
-        """Cancel the current selection and send cancel command to VMC"""
-        if self.current_selection:
-            selection = self.current_selection
-            self.current_selection = None
-            print(f"🚫 Cancelling selection #{selection}")
-            self.cancel_selection()
+        except Exception as e:
+            self._debug_print(f"Error during payment: {str(e)}")
+            with self.dispense_lock:
+                self.dispensing_active = False
 
     def _handle_dispensing_status(self, payload):
-        """Process DISPENSING_STATUS (0x04) packet without retry logic"""
+        """Process DISPENSING_STATUS (0x04) packet"""
         if len(payload) < 2:
             self._debug_print("Invalid DISPENSING_STATUS packet length")
             return
@@ -317,7 +328,8 @@ class VendingMachine:
         success = status_code == 0x02
 
         message = status_messages.get(
-            status_code, f"❌ Unknown error (code: {status_code}) - dispensing cancelled"
+            status_code,
+            f"❌ Unknown error (code: {status_code}) - dispensing cancelled",
         )
         print(message)
 
@@ -333,7 +345,9 @@ class VendingMachine:
             else:
                 # Any error - cancel dispensing immediately
                 self.dispensing_active = False
-                print(f"🚫 Dispensing cancelled for product #{selection}. Please contact support if needed.")
+                print(
+                    f"🚫 Dispensing cancelled for product #{selection}. Please contact support if needed."
+                )
 
         # If dispensing is complete (success or failure), reset current selection
         if not self.dispensing_active:
@@ -342,97 +356,45 @@ class VendingMachine:
         # Acknowledge receipt of dispensing status
         self._send_command(VMC_COMMANDS["ACK"]["code"])
 
-    def _start_dispensing(self, selection):
-        """Start the dispensing process with proper thread management"""
-        # Make sure we're not already dispensing
-        with self.dispense_lock:
-            if self.dispensing_active:
-                self._debug_print("Dispensing already in progress, ignoring request")
-                return
-            self.dispensing_active = True
-            self.dispense_retry_count = 0
-
-        # Start the dispensing thread
-        threading.Thread(
-            target=self._handle_payment, args=(selection,), daemon=True
-        ).start()
-
-    def _handle_payment(self, selection):
-        """Process payment using eSocket POS terminal"""
-        try:
-            self._debug_print(f"Step 4: Processing payment for selection #{selection}")
-            print(f"💳 Processing payment for product #{selection}...")
-
-            # Connect to eSocket terminal
-            if not self.esocket_client.connect():
-                print("❌ Failed to connect to payment terminal")
-                with self.dispense_lock:
-                    self.dispensing_active = False
-                return
-
-            # Initialize terminal
-            try:
-                init_response = self.esocket_client.initialize_terminal()
-                print("✅ Payment terminal initialized")
-            except Exception as e:
-                print(f"❌ Failed to initialize payment terminal: {e}")
-                self.esocket_client.disconnect()
-                with self.dispense_lock:
-                    self.dispensing_active = False
-                return
-
-            # Send purchase transaction for $2.00 (200 cents)
-            transaction_id = f"TXN_{int(time.time())}_{selection}"
-            amount = 200  # $2.00 in cents
-
-            print(f"💰 Processing ${amount/100:.2f} payment...")
-
-            try:
-                response = self.esocket_client.send_purchase_transaction(
-                    transaction_id=transaction_id,
-                    amount=amount
-                )
-
-                # Handle payment response
-                if self._is_payment_successful(response):
-                    print(f"✅ Payment of ${amount/100:.2f} approved!")
-                    self._debug_print(f"Payment successfully verified for selection #{selection}")
-
-                    # Step 5: Start dispensing
-                    self._debug_print(f"Step 5: Starting dispensing for selection #{selection}")
-                    self.direct_drive_selection(selection, True, True)
-                else:
-                    print(f"❌ Payment declined or failed")
-                    print(f"🚫 Cancelling selection #{selection} due to payment failure")
-                    with self.dispense_lock:
-                        self.dispensing_active = False
-                    self._cancel_current_selection()
-
-            except Exception as e:
-                print(f"❌ Payment processing error: {e}")
-                with self.dispense_lock:
-                    self.dispensing_active = False
-                self._cancel_current_selection()
-            finally:
-                # Clean up terminal connection
-                try:
-                    self.esocket_client.close_terminal()
-                    self.esocket_client.disconnect()
-                except:
-                    pass
-
-        except Exception as e:
-            self._debug_print(f"Error during payment: {str(e)}")
-            with self.dispense_lock:
-                self.dispensing_active = False
+    def _cancel_current_selection(self):
+        """Cancel the current selection and send cancel command to VMC"""
+        if self.current_selection:
+            selection = self.current_selection
+            self.current_selection = None
+            print(f"🚫 Cancelling selection #{selection}")
+            self.cancel_selection()
 
     def _is_payment_successful(self, response):
         """Check if the payment response indicates success"""
-        # TODO: Implement proper response parsing based on eSocket documentation
-        # For now, assume success if no exception was thrown
-        # In real implementation, parse the XML response to check transaction status
-        self._debug_print(f"Payment response: {response}")
-        return True  # Simplified for now
+        try:
+            # Check if response contains success indicators
+            if isinstance(response, dict):
+                # Check for success flag
+                if response.get('success', False):
+                    # Parse the XML response to check for approval
+                    raw_response = response.get('raw_response', '')
+                    if 'ActionCode="APPROVE"' in raw_response:
+                        return True
+                    elif 'ActionCode="DECLINE"' in raw_response:
+                        # Extract error message for better debugging
+                        if 'Description="' in raw_response:
+                            start = raw_response.find('Description="') + 13
+                            end = raw_response.find('"', start)
+                            error_msg = raw_response[start:end]
+                            print(f"Payment declined: {error_msg}")
+                        return False
+                return False
+            
+            # If response is a string, check for approval indicators
+            if isinstance(response, str):
+                return 'ActionCode="APPROVE"' in response
+                
+            self._debug_print(f"Payment response: {response}")
+            return False
+            
+        except Exception as e:
+            self._debug_print(f"Error parsing payment response: {e}")
+            return False
 
     def queue_command(self, command_name, data=None):
         """Queue a command to be sent when next POLL is received"""

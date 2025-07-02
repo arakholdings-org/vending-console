@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import json
 import os
 import time
+import subprocess
 from typing import Any, Dict
 
 
@@ -16,8 +17,9 @@ class ESocketClient:
         self.is_connected = False
         self.reconnect_attempts = 3  # Add reconnection attempts
         self.reconnect_delay = 2  # seconds
+        self.restart_services = True  # Flag to control service restart behavior
 
-    def _load_terminal_id_from_config(self) -> str:
+    def _load_terminal_id_from_config(self):
         """Load terminal ID from config.json"""
         config_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "config.json"
@@ -26,7 +28,74 @@ class ESocketClient:
             config = json.load(f)
         return config["TERMINAL_ID"]
 
-    def _create_message_header(self, message_length: int) -> bytes:
+    def _restart_esocket_services(self):
+        """Restart eSocket services and reload daemon"""
+        try:
+            print("🔄 Restarting eSocket services...")
+            sudo_password = "00000000"
+
+            # ESP services that need to be restarted
+            services_to_restart = [
+                "espupgmgr.service",
+                "espconfigagent.service",
+                "esp.service",
+            ]
+
+            # First, reload systemd daemon
+            print("  📋 Initial systemd daemon reload...")
+            daemon_result = subprocess.run(
+                ["sudo", "-S", "systemctl", "daemon-reload"],
+                input=sudo_password + "\n",
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if daemon_result.returncode == 0:
+                print("  ✅ Systemd daemon reloaded successfully")
+            else:
+                print(f"  ⚠️  Daemon reload warning: {daemon_result.stderr}")
+
+            for service in services_to_restart:
+                try:
+                    print(f"  🔄 Attempting to restart {service}...")
+                    result = subprocess.run(
+                        ["sudo", "-S", "systemctl", "restart", service],
+                        input=sudo_password + "\n",
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode == 0:
+                        print(f"  ✅ Successfully restarted {service}")
+
+                    else:
+                        print(
+                            f"  ⚠️  Service {service} failed to restart: {result.stderr}"
+                        )
+                except subprocess.TimeoutExpired:
+                    print(f"  ⏰ Timeout restarting {service}")
+                except Exception as e:
+                    print(f"  ❌ Error restarting {service}: {e}")
+
+            # Reload systemd daemon after services
+            print("  📋 Final systemd daemon reload...")
+            final_daemon_result = subprocess.run(
+                ["sudo", "-S", "systemctl", "daemon-reload"],
+                input=sudo_password + "\n",
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if final_daemon_result.returncode == 0:
+                print("  ✅ Final systemd daemon reload successful")
+            else:
+                print(f"  ⚠️  Final daemon reload warning: {final_daemon_result.stderr}")
+
+        except Exception as e:
+            print(f"❌ Error during service restart: {e}")
+            return False
+
+    def _create_message_header(self, message_length: int):
         """Create TCP message header based on message length"""
         if message_length < 65535:
             # Two-byte header
@@ -39,8 +108,13 @@ class ESocketClient:
             header += struct.pack(">I", message_length)
             return header
 
-    def connect(self) -> bool:
+    def connect(self):
         """Establish TCP connection to eSocket.POS with retry logic"""
+        # Restart services on first connection attempt if enabled
+        if self.restart_services and not self.is_connected:
+            print("🔧 Preparing eSocket environment...")
+            self._restart_esocket_services()
+
         for attempt in range(self.reconnect_attempts):
             try:
                 if self.socket:
@@ -48,54 +122,95 @@ class ESocketClient:
 
                 self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.socket.settimeout(10)  # Add timeout
+
+                # Enable socket reuse to prevent "Address already in use" errors
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
                 self.socket.connect((self.host, self.port))
                 self.is_connected = True
+                print(f"✅ Connected to eSocket.POS at {self.host}:{self.port}")
                 return True
             except Exception as e:
                 print(f"Connection attempt {attempt + 1} failed: {e}")
+                if self.socket:
+                    try:
+                        self.socket.close()
+                    except:
+                        pass
+                    self.socket = None
                 if attempt < self.reconnect_attempts - 1:
                     time.sleep(self.reconnect_delay)
                 continue
         self.is_connected = False
         return False
 
-    def _send_message(self, xml_message: str) -> str:
+    def _send_message(self, xml_message: str):
         """Send XML message with timeout handling"""
-        if not self.is_connected:
+        if not self.is_connected or not self.socket:
             if not self.connect():
                 raise Exception("Not connected to eSocket.POS")
 
         try:
-            # Set timeout for operations
+            # Verify socket is still valid
             self.socket.settimeout(30)  # 30 seconds timeout
 
             message_bytes = xml_message.encode("utf-8")
             header = self._create_message_header(len(message_bytes))
+            full_message = header + message_bytes
 
             # Send header + message with error checking
             total_sent = 0
-            while total_sent < len(header + message_bytes):
-                sent = self.socket.send((header + message_bytes)[total_sent:])
-                if sent == 0:
-                    raise Exception("Socket connection broken")
-                total_sent += sent
+            while total_sent < len(full_message):
+                try:
+                    sent = self.socket.send(full_message[total_sent:])
+                    if sent == 0:
+                        raise Exception("Socket connection broken during send")
+                    total_sent += sent
+                except socket.error as e:
+                    if e.errno == 9:  # Bad file descriptor
+                        self.is_connected = False
+                        raise Exception(f"Socket closed unexpectedly: {e}")
+                    raise
 
             # Read response header with timeout
-            response_header = self.socket.recv(2)
-            if len(response_header) < 2:
-                raise Exception("Failed to read response header")
+            response_header = b""
+            while len(response_header) < 2:
+                try:
+                    chunk = self.socket.recv(2 - len(response_header))
+                    if not chunk:
+                        raise Exception("Connection closed while reading header")
+                    response_header += chunk
+                except socket.error as e:
+                    if e.errno == 9:  # Bad file descriptor
+                        self.is_connected = False
+                        raise Exception(f"Socket closed during header read: {e}")
+                    raise
 
             # Parse header to get message length
             if response_header == b"\xff\xff":
                 # Six-byte header
                 length_bytes = self.socket.recv(4)
+                if len(length_bytes) < 4:
+                    raise Exception("Failed to read extended header")
                 response_length = struct.unpack(">I", length_bytes)[0]
             else:
                 # Two-byte header
                 response_length = response_header[0] * 256 + response_header[1]
 
-            # Read response message
-            response_data = self.socket.recv(response_length)
+            # Read response message in chunks
+            response_data = b""
+            while len(response_data) < response_length:
+                try:
+                    chunk = self.socket.recv(response_length - len(response_data))
+                    if not chunk:
+                        raise Exception("Connection closed while reading response")
+                    response_data += chunk
+                except socket.error as e:
+                    if e.errno == 9:  # Bad file descriptor
+                        self.is_connected = False
+                        raise Exception(f"Socket closed during response read: {e}")
+                    raise
+
             return response_data.decode("utf-8")
         except socket.timeout:
             self.is_connected = False
@@ -103,76 +218,104 @@ class ESocketClient:
         except socket.error as e:
             self.is_connected = False
             raise Exception(f"Socket error: {e}")
+        except Exception as e:
+            self.is_connected = False
+            raise
+
+        except socket.error as e:
+            self.is_connected = False
+            raise Exception(f"Socket error: {e}")
 
     def disconnect(self):
         """Close connection with proper cleanup"""
-        try:
-            if self.socket:
-                self.socket.shutdown(socket.SHUT_RDWR)  # Properly shutdown socket
+        self.is_connected = False
+        if self.socket:
+            try:
+                # Try to shutdown gracefully first
+                try:
+                    self.socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    # Socket might already be closed, continue with close()
+                    pass
                 self.socket.close()
-        except Exception as e:
-            print(f"Error during disconnect: {e}")
-        finally:
-            self.socket = None
-            self.is_connected = False
-            self.terminal_id = None  # Reset terminal ID on disconnect
+            except Exception as e:
+                print(f"Warning during disconnect: {e}")
+            finally:
+                self.socket = None
+        self.terminal_id = None  # Reset terminal ID on disconnect
 
     def initialize_terminal(
         self, terminal_id: str = None, register_callbacks: bool = True
-    ) -> Dict[str, Any]:
+    ):
         """Initialize terminal with eSocket.POS"""
-        if not self.is_connected and not self.connect():
-            raise Exception("Cannot initialize terminal - not connected")
+        # Ensure we have a fresh connection
+        if not self.is_connected or not self.socket:
+            print("🔌 Establishing connection for terminal initialization...")
+            if not self.connect():
+                raise Exception("Cannot initialize terminal - connection failed")
 
-        if terminal_id is None:
-            terminal_id = self._load_terminal_id_from_config()
+        try:
+            if terminal_id is None:
+                terminal_id = self._load_terminal_id_from_config()
 
-        self.terminal_id = terminal_id
+            self.terminal_id = terminal_id
+            print(f"🔧 Initializing terminal {terminal_id}...")
 
-        # Build initialization XML
-        root = ET.Element(
-            "Esp:Interface",
-            {
-                "Version": "1.0",
-                "xmlns:Esp": "http://www.mosaicsoftware.com/Postilion/eSocket.POS/",
-            },
-        )
-
-        admin = ET.SubElement(
-            root,
-            "Esp:Admin",
-            {
-                "TerminalId": terminal_id,
-                "Action": "INIT",
-            },
-        )
-
-        # Register for callbacks if needed
-        if register_callbacks:
-            ET.SubElement(
-                admin,
-                "Esp:Register",
+            # Build initialization XML
+            root = ET.Element(
+                "Esp:Interface",
                 {
-                    "Type": "CALLBACK",
-                    "EventId": "DATA_REQUIRED",
-                },
-            )
-            ET.SubElement(
-                admin,
-                "Esp:Register",
-                {
-                    "Type": "EVENT",
-                    "EventId": "PROMPT_INSERT_CARD",
+                    "Version": "1.0",
+                    "xmlns:Esp": "http://www.mosaicsoftware.com/Postilion/eSocket.POS/",
                 },
             )
 
-        xml_message = ET.tostring(root, encoding="unicode")
-        xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_message}'
+            admin = ET.SubElement(
+                root,
+                "Esp:Admin",
+                {
+                    "TerminalId": terminal_id,
+                    "Action": "INIT",
+                },
+            )
 
-        response = self._send_message(xml_message)
-        return self._parse_response(response)
+            # Register for callbacks if needed
+            if register_callbacks:
+                ET.SubElement(
+                    admin,
+                    "Esp:Register",
+                    {
+                        "Type": "CALLBACK",
+                        "EventId": "DATA_REQUIRED",
+                    },
+                )
+                ET.SubElement(
+                    admin,
+                    "Esp:Register",
+                    {
+                        "Type": "EVENT",
+                        "EventId": "PROMPT_INSERT_CARD",
+                    },
+                )
 
-    def close_terminal(self) -> Dict[str, Any]:
+            xml_message = ET.tostring(root, encoding="unicode")
+            xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_message}'
+
+            response = self._send_message(xml_message)
+            result = self._parse_response(response)
+
+            if result.get("success"):
+                print(f"✅ Terminal {terminal_id} initialized successfully")
+            else:
+                print(f"❌ Terminal initialization failed: {result}")
+
+            return result
+        except Exception as e:
+            print(f"❌ Terminal initialization error: {e}")
+            # Don't disconnect here - let the caller decide
+            raise
+
+    def close_terminal(self):
         """Close terminal session with proper cleanup"""
         if not self.is_connected:
             return {"success": True, "message": "Already disconnected"}
@@ -208,10 +351,9 @@ class ESocketClient:
             parsed_response = self._parse_response(response)
 
             # Check if close was successful
-            if (
-                parsed_response.get("success")
-                and 'ActionCode="APPROVE"' in parsed_response.get("raw_response", "")
-            ):
+            if parsed_response.get(
+                "success"
+            ) and 'ActionCode="APPROVE"' in parsed_response.get("raw_response", ""):
                 self.disconnect()  # Ensure we disconnect after closing
                 return parsed_response
             else:
@@ -281,7 +423,7 @@ class ESocketClient:
         response = self._send_message(xml_message)
         return self._parse_response(response)
 
-    def _parse_response(self, response: str) -> Dict[str, Any]:
+    def _parse_response(self, response: str):
         """Parse XML response from eSocket.POS"""
         try:
             root = ET.fromstring(response)

@@ -24,10 +24,11 @@ class VendingMachine:
         self.dispense_lock = threading.Lock()
         self.dispensing_active = False
 
-        # Initialize queues
+        # Initialize command queue with retry tracking
         self.command_queue = Queue()
-        self.payment_queue = Queue()
-        self.status_queue = Queue()
+        self._command_retries = {}  # Track retries per command
+        self.MAX_RETRIES = 5  # According to protocol spec
+        self.last_command_time = 0  # Track last command time
 
         # Initialize eSocket client
         self.esocket_client = ESocketClient()
@@ -88,6 +89,8 @@ class VendingMachine:
             if self.esocket_client.connect():
                 print("✅ Connected to payment terminal")
                 try:
+                    # Add small delay to ensure connection is stable
+                    time.sleep(0.5)
                     self.esocket_client.initialize_terminal()
                     self.esocket_connected = True
                     print("✅ Payment terminal initialized successfully")
@@ -95,13 +98,22 @@ class VendingMachine:
                 except Exception as e:
                     print(f"❌ Failed to initialize payment terminal: {e}")
                     self.esocket_connected = False
-                    # Keep connection for retry
+                    # Try to disconnect cleanly on initialization failure
+                    try:
+                        self.esocket_client.disconnect()
+                    except:
+                        pass
             else:
                 print("❌ Failed to connect to payment terminal")
                 self.esocket_connected = False
         except Exception as e:
             print(f"❌ Payment terminal connection error: {e}")
             self.esocket_connected = False
+            # Ensure clean state on error
+            try:
+                self.esocket_client.disconnect()
+            except:
+                pass
 
     def close(self):
         """Clean shutdown"""
@@ -243,18 +255,49 @@ class VendingMachine:
     def _handle_poll(self, payload):
         """Process POLL (0x41) packet and respond within 100ms"""
         try:
-            if self.command_queue:
-                next_cmd = self.command_queue.pop(0)
+            current_time = time.time()
+
+            # Check if we have commands to process
+            if not self.command_queue.empty():
+                # Ensure we're not responding too quickly (protocol requires 200ms between polls)
+                if current_time - self.last_command_time < 0.2:  # 200ms
+                    self._send_command(VMC_COMMANDS["ACK"]["code"])
+                    return
+
+                next_cmd = self.command_queue.get_nowait()
+                cmd_id = id(next_cmd)  # Use command object id as unique identifier
+
+                # Check retry count
+                retries = self._command_retries.get(cmd_id, 0)
+                if retries >= self.MAX_RETRIES:
+                    self._debug_print(
+                        f"Maximum retries reached for command: {next_cmd}"
+                    )
+                    self._command_retries.pop(cmd_id, None)
+                    self._send_command(VMC_COMMANDS["ACK"]["code"])
+                    return
+
+                # Send command
                 if isinstance(next_cmd, tuple):
                     cmd_code, data = next_cmd
-                    self._send_command(cmd_code, data)
+                    success = self._send_command(cmd_code, data)
                 else:
-                    self._send_command(next_cmd)
+                    success = self._send_command(next_cmd)
+
+                if not success:
+                    # Put command back in queue for retry
+                    self._command_retries[cmd_id] = retries + 1
+                    self.command_queue.put(next_cmd)
+                else:
+                    # Command sent successfully, reset retry counter
+                    self._command_retries.pop(cmd_id, None)
+                    self.last_command_time = current_time
             else:
                 self._send_command(VMC_COMMANDS["ACK"]["code"])
+        except Empty:
+            self._send_command(VMC_COMMANDS["ACK"]["code"])
         except Exception as e:
             self._debug_print(f"Poll handling error: {e}")
-            # Always try to send ACK even if command fails
             self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     def _handle_selection_info(self, payload):
@@ -274,19 +317,36 @@ class VendingMachine:
 
         selection = int.from_bytes(payload[1:3], "big")
         if selection == 0:
-            self.current_selection = None
-            print("\n🚫 Selection cancelled")
-            # Clear any ongoing dispensing
-            with self.dispense_lock:
-                self.dispensing_active = False
+            # Only process cancel if we have an active selection
+            if self.current_selection is not None:
+                self.current_selection = None
+                print("\n🚫 Selection cancelled")
+                # Clear any ongoing dispensing
+                with self.dispense_lock:
+                    self.dispensing_active = False
         else:
-            self.current_selection = selection
-            print(f"\n📦 Selection #{selection} received - processing payment...")
-            # Directly handle payment after selection
-            self._handle_payment(selection)
+            # Only process selection if we don't already have one
+            if self.current_selection is None:
+                self.current_selection = selection
+                print(f"\n📦 Selection #{selection} received - processing payment...")
+                # Directly handle payment after selection
+                self._handle_payment(selection)
+            else:
+                self._debug_print(
+                    f"Ignoring selection {selection}, already processing {self.current_selection}"
+                )
 
     def _handle_payment(self, selection):
         """Process payment using separate thread to avoid blocking POLL responses"""
+
+        # Prevent multiple payment processes for the same selection
+        if (
+            hasattr(self, "payment_thread")
+            and self.payment_thread
+            and self.payment_thread.is_alive()
+        ):
+            self._debug_print("Payment already in progress, ignoring duplicate request")
+            return
 
         def payment_worker():
             try:
@@ -305,22 +365,31 @@ class VendingMachine:
                     f"💰 Processing ${amount/100:.2f} payment... (TXN: {transaction_id})"
                 )
 
-                response = self.esocket_client.send_purchase_transaction(
-                    transaction_id=transaction_id, amount=amount
-                )
+                with self._command_lock:  # Prevent concurrent payment processing
+                    response = self.esocket_client.send_purchase_transaction(
+                        transaction_id=transaction_id, amount=amount
+                    )
 
-                if self._is_payment_successful(response):
-                    print(f"✅ Payment approved!")
-                    with self.dispense_lock:
-                        self.dispensing_active = True
-                    self.direct_drive_selection(selection, True, True)
-                else:
-                    print("❌ Payment declined")
-                    self._cancel_current_selection()
+                    if self._is_payment_successful(response):
+                        print(f"✅ Payment approved!")
+                        with self.dispense_lock:
+                            if (
+                                self.current_selection == selection
+                            ):  # Verify selection hasn't changed
+                                self.dispensing_active = True
+                                self.direct_drive_selection(selection, True, True)
+                            else:
+                                print("❌ Selection changed during payment processing")
+                                self._cancel_current_selection()
+                    else:
+                        print("❌ Payment declined")
+                        self._cancel_current_selection()
 
             except Exception as e:
                 print(f"❌ Payment error: {e}")
                 self._cancel_current_selection()
+            finally:
+                self.payment_thread = None  # Clear the thread reference
 
         # Start payment processing in separate thread
         self.payment_thread = threading.Thread(target=payment_worker, daemon=True)
@@ -423,9 +492,11 @@ class VendingMachine:
         if command_name in VMC_COMMANDS:
             cmd_code = VMC_COMMANDS[command_name]["code"]
             if data:
-                self.command_queue.append((cmd_code, data))
+                self.command_queue.put(
+                    (cmd_code, data)
+                )  # Use .put() instead of .append()
             else:
-                self.command_queue.append(cmd_code)
+                self.command_queue.put(cmd_code)
             self._debug_print(f"Command {command_name} queued for next POLL")
             return True
         else:

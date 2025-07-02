@@ -39,6 +39,19 @@ class VendingMachine:
     async def connect(self):
         """Establish serial connection and initialize payment terminal"""
         try:
+            # Restart esp services and reload daemon before connecting eSocket
+            import subprocess
+
+            try:
+                cmd = (
+                    "echo 00000000 | sudo -S systemctl restart espupgmgr.service espconfigagent.service esp.service  && "
+                    "echo 00000000 | sudo -S systemctl daemon-reload"
+                )
+                subprocess.run(cmd, shell=True, check=True)
+                self.log("ESP services restarted and daemon reloaded")
+            except Exception as e:
+                self.log(f"Failed to restart ESP services: {e}")
+
             self.reader, self.writer = await serial_asyncio.open_serial_connection(
                 url=self.port,
                 baudrate=57600,

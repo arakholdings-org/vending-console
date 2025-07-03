@@ -8,6 +8,9 @@ from services.esocket import ESocketClient
 
 
 class VendingMachine:
+    POLL_INTERVAL = 0.2  # 200ms as per spec
+    RESPONSE_TIMEOUT = 0.1  # 100ms as per spec
+
     def __init__(self, port="/dev/ttyUSB0", debug=False):
         self.port = port
         self.debug = debug
@@ -17,7 +20,7 @@ class VendingMachine:
         self.reader = None
         self.writer = None
         self.current_selection = None
-        self.recv_buffer = bytearray()
+
         self.dispensing_active = False
 
         # Command queue
@@ -32,48 +35,44 @@ class VendingMachine:
         # Simple state tracking
         self.state = "idle"  # idle, selecting, paying, dispensing
 
+        self.recv_buffer = bytearray()
+        self.event_queue = asyncio.Queue()
+
+        self._payment_lock = asyncio.Lock()
+        self._command_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent commands
+
     def log(self, *args):
         if self.debug:
             print(*args)
 
     async def connect(self):
-        """Establish serial connection and initialize payment terminal"""
+        """Establish connections with retries"""
         try:
-            # Restart esp services and reload daemon before connecting eSocket
-            import subprocess
+            # Connect serial
+            for attempt in range(3):
+                try:
+                    self.reader, self.writer = await serial_asyncio.open_serial_connection(
+                        url=self.port,
+                        baudrate=57600,
+                        parity="N",
+                        stopbits=1,
+                        bytesize=8,
+                    )
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(1)
 
-            try:
-                cmd = (
-                    "echo 00000000 | sudo -S systemctl restart espupgmgr.service espconfigagent.service esp.service  && "
-                    "echo 00000000 | sudo -S systemctl daemon-reload"
-                )
-                subprocess.run(cmd, shell=True, check=True)
-                self.log("ESP services restarted and daemon reloaded")
-            except Exception as e:
-                self.log(f"Failed to restart ESP services: {e}")
-
-            self.reader, self.writer = await serial_asyncio.open_serial_connection(
-                url=self.port,
-                baudrate=57600,
-                parity="N",
-                stopbits=1,
-                bytesize=8,
-            )
             self.running = True
 
             # Initialize payment terminal
-            try:
-                await self.esocket_client.connect()
-                await self.esocket_client.initialize_terminal()
-                self.esocket_connected = True
-                self.log("Payment terminal initialized")
-            except Exception as e:
-                self.log(f"Payment terminal init failed: {e}")
-                self.esocket_connected = False
+            if await self._connect_payment_terminal():
+                self.log("All connections established")
 
-            # Start communication task
+            # Start communication and event handling
             asyncio.create_task(self._communication_loop())
-            self.log("Connection established")
+            asyncio.create_task(self._handle_events())
 
         except Exception as e:
             self.log(f"Connection failed: {e}")
@@ -134,28 +133,26 @@ class VendingMachine:
         self.last_command_time = time.time()
 
     async def _communication_loop(self):
-        """Handle incoming data and process commands"""
+        """Handle incoming data and process commands with proper timing"""
         while self.running:
             try:
-                # Process incoming data
+                last_poll_time = time.monotonic()
+
+                # Process incoming data with timeout
                 try:
-                    data = await asyncio.wait_for(self.reader.read(1024), timeout=0.1)
+                    data = await asyncio.wait_for(
+                        self.reader.read(1024), timeout=self.RESPONSE_TIMEOUT
+                    )
                     if data:
                         self.recv_buffer.extend(data)
                         await self._process_incoming_data()
                 except asyncio.TimeoutError:
                     pass
 
-                # Process queued commands
-                if not self.command_queue.empty():
-                    cmd = await self.command_queue.get()
-                    (
-                        await self._send_command(*cmd)
-                        if isinstance(cmd, tuple)
-                        else await self._send_command(cmd)
-                    )
-
-                await asyncio.sleep(0.01)  # Prevent CPU overload
+                # Maintain poll frequency
+                elapsed = time.monotonic() - last_poll_time
+                if elapsed < self.POLL_INTERVAL:
+                    await asyncio.sleep(self.POLL_INTERVAL - elapsed)
 
             except Exception as e:
                 self.log(f"Communication error: {e}")
@@ -257,35 +254,40 @@ class VendingMachine:
                 asyncio.create_task(self._process_payment(selection))
 
     async def _process_payment(self, selection):
-        """Handle payment process"""
+        """Handle payment process with 80-second timeout"""
         try:
-            self.state = "paying"
+            async with asyncio.timeout(80):  # 80 second timeout
+                self.state = "paying"
 
-            if not self.esocket_connected:
-                print("Reconnecting payment terminal...")
-                await self.esocket_client.connect()
-                await self.esocket_client.initialize_terminal()
-                self.esocket_connected = True
+                if not self.esocket_connected:
+                    print("Reconnecting payment terminal...")
+                    await self.esocket_client.connect()
+                    await self.esocket_client.initialize_terminal()
+                    self.esocket_connected = True
 
-            # Generate transaction ID
-            transaction_id = str(int(time.time()) % 1000000).zfill(6)
-            amount = 100  # $1.00 in cents
+                # Generate transaction ID
+                transaction_id = str(int(time.time()) % 1000000).zfill(6)
+                amount = 100  # $1.00 in cents
 
-            print(f"Processing payment ${amount/100:.2f} (TXN: {transaction_id})")
+                print(f"Processing payment ${amount/100:.2f} (TXN: {transaction_id})")
 
-            response = await self.esocket_client.send_purchase_transaction(
-                transaction_id=transaction_id, amount=amount
-            )
+                response = await self.esocket_client.send_purchase_transaction(
+                    transaction_id=transaction_id, amount=amount
+                )
 
-            if 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                print("Payment approved")
-                self.state = "dispensing"
-                await self.direct_drive_selection(selection)
-            else:
-                print("Payment declined")
-                await self.cancel_selection()
-                self.state = "idle"
+                if 'ActionCode="APPROVE"' in response.get("raw_response", ""):
+                    print("Payment approved")
+                    self.state = "dispensing"
+                    await self.direct_drive_selection(selection)
+                else:
+                    print("Payment declined")
+                    await self.cancel_selection()
+                    self.state = "idle"
 
+        except asyncio.TimeoutError:
+            print("Payment timed out after 80 seconds")
+            await self.cancel_selection()
+            self.state = "idle"
         except Exception as e:
             print(f"Payment error: {e}")
             await self.cancel_selection()
@@ -321,14 +323,15 @@ class VendingMachine:
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def queue_command(self, command_name, data=None):
-        """Queue a command for execution"""
-        if command_name in VMC_COMMANDS:
-            cmd_code = VMC_COMMANDS[command_name]["code"]
-            if data:
-                await self.command_queue.put((cmd_code, data))
-            else:
-                await self.command_queue.put(cmd_code)
-            return True
+        """Queue a command with concurrency control"""
+        async with self._command_semaphore:
+            if command_name in VMC_COMMANDS:
+                cmd_code = VMC_COMMANDS[command_name]["code"]
+                if data:
+                    await self.command_queue.put((cmd_code, data))
+                else:
+                    await self.command_queue.put(cmd_code)
+                return True
         return False
 
     async def direct_drive_selection(self, selection_number):
@@ -341,3 +344,36 @@ class VendingMachine:
         """Cancel current selection"""
         data = (0).to_bytes(2, byteorder="big")
         return await self.queue_command("SELECT_CANCEL", data)
+
+    async def _get_next_event(self):
+        """Get next event from queue"""
+        try:
+            return await asyncio.wait_for(self.event_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            return None
+
+    async def _process_event(self, event):
+        """Process a single event"""
+        try:
+            event_type = event.get("type")
+            if event_type == "payment":
+                await self._handle_payment_event(event)
+            elif event_type == "dispensing":
+                await self._handle_dispensing_event(event)
+        except Exception as e:
+            self.log(f"Event processing error: {e}")
+
+    async def _handle_events(self):
+        """Handle multiple events concurrently"""
+        event_tasks = set()
+
+        while self.running:
+            # Clean up completed tasks
+            event_tasks = {task for task in event_tasks if not task.done()}
+
+            # Handle new events
+            if new_event := await self._get_next_event():
+                task = asyncio.create_task(self._process_event(new_event))
+                event_tasks.add(task)
+
+            await asyncio.sleep(0.01)

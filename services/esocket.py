@@ -6,6 +6,7 @@ import json
 import os
 import time
 from typing import Dict, Any
+import subprocess
 
 
 class ESocketClient:
@@ -30,10 +31,11 @@ class ESocketClient:
             raise Exception(f"Failed to load terminal ID: {e}")
 
     async def connect(self) -> bool:
-        """Establish connection to eSocket server"""
+        """Establish connection to eSocket server with service restart"""
         if self.is_connected:
             return True
 
+        # Try to connect to the service
         try:
             self.reader, self.writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port), timeout=5.0
@@ -42,6 +44,7 @@ class ESocketClient:
             self._last_activity = time.time()
             print(f"Connected to eSocket at {self.host}:{self.port}")
             return True
+
         except Exception as e:
             print(f"Connection failed: {e}")
             await self._cleanup_connection()
@@ -131,14 +134,16 @@ class ESocketClient:
                 },
             )
 
-            # Register for common callbacks
-            ET.SubElement(
-                admin, "Esp:Register", {"Type": "CALLBACK", "EventId": "DATA_REQUIRED"}
-            )
+            # Only register for essential callbacks and remove PAN prompt
             ET.SubElement(
                 admin,
                 "Esp:Register",
                 {"Type": "EVENT", "EventId": "PROMPT_INSERT_CARD"},
+            )
+            ET.SubElement(
+                admin,
+                "Esp:Register",
+                {"Type": "EVENT", "EventId": "CARD_INSERTED"},
             )
 
             xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{ET.tostring(root, encoding="unicode")}'

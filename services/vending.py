@@ -1,10 +1,11 @@
 import asyncio
-
 import time
 from asyncio import Queue
+
 import serial_asyncio
-from utils import VMC_COMMANDS
+
 from services.esocket import ESocketClient
+from utils import VMC_COMMANDS
 
 
 class VendingMachine:
@@ -49,26 +50,19 @@ class VendingMachine:
         """Establish connections with retries"""
         try:
             # Connect serial
-            for attempt in range(3):
-                try:
-                    self.reader, self.writer = await serial_asyncio.open_serial_connection(
-                        url=self.port,
-                        baudrate=57600,
-                        parity="N",
-                        stopbits=1,
-                        bytesize=8,
-                    )
-                    break
-                except Exception as e:
-                    if attempt == 2:
-                        raise
-                    await asyncio.sleep(1)
+            self.reader, self.writer = await serial_asyncio.open_serial_connection(
+                url=self.port,
+                baudrate=57600,
+                parity="N",
+                stopbits=1,
+                bytesize=8,
+            )
 
             self.running = True
 
-            # Initialize payment terminal
-            if await self._connect_payment_terminal():
-                self.log("All connections established")
+            # Initialize payment terminal once
+            if not self.esocket_connected:
+                await self._connect_payment_terminal()
 
             # Start communication and event handling
             asyncio.create_task(self._communication_loop())
@@ -133,32 +127,23 @@ class VendingMachine:
         self.last_command_time = time.time()
 
     async def _communication_loop(self):
-        """Handle incoming data and process commands with proper timing"""
+        """Optimized communication loop"""
         while self.running:
             try:
-                last_poll_time = time.monotonic()
+                data = await self.reader.read(1024)
+                if data:
+                    self.recv_buffer.extend(data)
+                    await self._process_incoming_data()
 
-                # Process incoming data with timeout
-                try:
-                    data = await asyncio.wait_for(
-                        self.reader.read(1024), timeout=self.RESPONSE_TIMEOUT
-                    )
-                    if data:
-                        self.recv_buffer.extend(data)
-                        await self._process_incoming_data()
-                except asyncio.TimeoutError:
-                    pass
-
-                # Maintain poll frequency
-                elapsed = time.monotonic() - last_poll_time
-                if elapsed < self.POLL_INTERVAL:
-                    await asyncio.sleep(self.POLL_INTERVAL - elapsed)
+                # Only send ACKs when needed
+                if self.state == "dispensing":
+                    await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
             except Exception as e:
                 self.log(f"Communication error: {e}")
                 if not self.running:
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.01)
 
     async def _process_incoming_data(self):
         """Process all available data in buffer"""
@@ -201,9 +186,12 @@ class VendingMachine:
     async def _handle_packet(self, packet):
         """Handle a single validated packet"""
         cmd = packet[2]
-        payload = packet[4:-1]  # Skip header and checksum
+        payload = packet[4:-1]
 
-        # Handle specific commands
+        # Match packet number for responses
+        if len(payload) > 0:
+            self.packet_number = payload[0]
+
         if cmd == VMC_COMMANDS["POLL"]["code"]:
             await self._handle_poll()
         elif cmd == VMC_COMMANDS["SELECTION_INFO"]["code"]:
@@ -216,23 +204,37 @@ class VendingMachine:
             await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _handle_poll(self):
-        """Respond to poll request"""
+        """Optimized poll handling"""
         if not self.command_queue.empty():
             cmd = await self.command_queue.get()
-            (
+            # Prioritize dispensing commands
+            if (
+                isinstance(cmd, tuple)
+                and cmd[0] == VMC_COMMANDS["DIRECT_DRIVE"]["code"]
+            ):
                 await self._send_command(*cmd)
-                if isinstance(cmd, tuple)
-                else await self._send_command(cmd)
-            )
+            else:
+                await self._send_command(*cmd if isinstance(cmd, tuple) else (cmd,))
         else:
             await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _handle_selection_info(self, payload):
         """Handle selection info from machine"""
-        if len(payload) < 7:
+        if len(payload) < 12:  # Changed from 7 to 12 as per spec
             self.log("Invalid SELECTION_INFO packet")
             return
 
+        # Parse according to spec (section 4.2.1)
+        selection = int.from_bytes(payload[1:3], "big")
+        price = int.from_bytes(payload[3:7], "big")
+        inventory = payload[7]
+        capacity = payload[8]
+        product_id = int.from_bytes(payload[9:11], "big")
+        status = payload[11]
+
+        self.log(
+            f"Selection {selection}: Price={price}, Inventory={inventory}, Status={status}"
+        )
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _handle_selection_cancel(self, payload):
@@ -241,84 +243,110 @@ class VendingMachine:
             self.log("Invalid SELECT_CANCEL packet")
             return
 
+        # Get packet number and selection
+        packet_number = payload[0]
         selection = int.from_bytes(payload[1:3], "big")
+
+        # Avoid duplicate processing by tracking packet numbers
+        if (
+            hasattr(self, "_last_cancel_packet")
+            and self._last_cancel_packet == packet_number
+        ):
+            return
+        self._last_cancel_packet = packet_number
+
         if selection == 0:
-            self.current_selection = None
-            self.state = "idle"
-            print("\nSelection cancelled")
+            if self.state != "idle":
+                self.current_selection = None
+                self.state = "idle"
+                print("\nSelection cancelled")
         else:
+            # Only process if we're not already in a transaction
             if self.state == "idle":
                 self.current_selection = selection
-                self.state = "selecting"
+                self.state = "paying"
                 print(f"\nSelected product #{selection}")
-                asyncio.create_task(self._process_payment(selection))
+                await self._process_payment(selection)
+            else:
+                self.log(
+                    f"Ignoring selection {selection}, already processing transaction"
+                )
+
+        # Send acknowledgment
+        await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _process_payment(self, selection):
-        """Handle payment process with 80-second timeout"""
+        """Simple payment processing"""
+        if self.state != "paying":
+            self.log("Payment attempted in invalid state")
+            return
+
         try:
-            async with asyncio.timeout(80):  # 80 second timeout
-                self.state = "paying"
-
-                if not self.esocket_connected:
-                    print("Reconnecting payment terminal...")
-                    await self.esocket_client.connect()
-                    await self.esocket_client.initialize_terminal()
-                    self.esocket_connected = True
-
+            # Prevent multiple transactions at once
+            async with self._payment_lock:
                 # Generate transaction ID
                 transaction_id = str(int(time.time()) % 1000000).zfill(6)
                 amount = 100  # $1.00 in cents
 
                 print(f"Processing payment ${amount/100:.2f} (TXN: {transaction_id})")
 
-                response = await self.esocket_client.send_purchase_transaction(
-                    transaction_id=transaction_id, amount=amount
-                )
+                # Process payment with timeout
+                try:
+                    response = await self.esocket_client.send_purchase_transaction(
+                        transaction_id=transaction_id, amount=amount
+                    )
 
-                if 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                    print("Payment approved")
-                    self.state = "dispensing"
-                    await self.direct_drive_selection(selection)
-                else:
-                    print("Payment declined")
-                    await self.cancel_selection()
+                    raw = response.get("raw_response", "<no response>")
+                    print("Raw POS response:", raw)
+
+                    # Only accept a successful Esp:Transaction with ActionCode="APPROVE"
+                    if (
+                        response.get("success")
+                        and "<Esp:Transaction" in raw
+                        and 'ActionCode="APPROVE"' in raw
+                    ):
+                        print("Payment approved")
+                        self.state = "dispensing"
+                        await self.direct_drive_selection(selection)
+                    elif "<Esp:Error" in raw:
+                        print("POS error: Error response received (event or decline)")
+                        self.state = "idle"
+                        self.current_selection = None
+                    else:
+                        print("Payment declined or event response ignored")
+                        self.state = "idle"
+                        self.current_selection = None
+
+                except asyncio.TimeoutError:
+                    print("Payment timeout - transaction cancelled")
                     self.state = "idle"
+                    self.current_selection = None
+                except Exception as e:
+                    print(f"Payment error (POS comms): {str(e)}")
+                    self.state = "idle"
+                    self.current_selection = None
 
-        except asyncio.TimeoutError:
-            print("Payment timed out after 80 seconds")
-            await self.cancel_selection()
-            self.state = "idle"
         except Exception as e:
-            print(f"Payment error: {e}")
-            await self.cancel_selection()
+            print(f"Payment error (outer): {str(e)}")
             self.state = "idle"
+            self.current_selection = None
 
     async def _handle_dispensing_status(self, payload):
-        """Handle dispensing status updates"""
+        """Simple dispensing status handler"""
         if len(payload) < 2:
-            self.log("Invalid DISPENSING_STATUS packet")
             return
 
         status_code = payload[1]
         selection = self.current_selection
 
-        status_messages = {
-            0x00: f"Product #{selection} dispensed successfully",
-            0x02: f"Product #{selection} dispensed successfully",
-            0x03: f"Product #{selection} jammed",
-            0x04: f"Product #{selection} motor error",
-            0x06: f"Product #{selection} motor doesn't exist",
-            0x07: f"Product #{selection} elevator error",
-            0xFF: f"Product #{selection} purchase terminated",
-        }
-
-        message = status_messages.get(status_code, f"Unknown status {status_code}")
-        print(message)
-
-        # Reset state if dispensing is complete
-        if status_code in (0x00, 0x02, 0x03, 0x04, 0x06, 0x07, 0xFF):
-            self.state = "idle"
+        if status_code in (0x00, 0x02):
+            print(f"Product #{selection} dispensed successfully")
             self.current_selection = None
+            self.state = "idle"
+        elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
+            print(f"Product #{selection} - Error code: {status_code:02X}")
+            self.current_selection = None
+            self.state = "idle"
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
@@ -335,10 +363,12 @@ class VendingMachine:
         return False
 
     async def direct_drive_selection(self, selection_number):
-        """Directly drive a selection motor"""
+        """Immediate dispensing command"""
         data = bytes([1, 1])  # Use both drop sensor and elevator
         data += selection_number.to_bytes(2, byteorder="big")
-        return await self.queue_command("DIRECT_DRIVE", data)
+        # Send command immediately for dispensing
+        await self._send_command(VMC_COMMANDS["DIRECT_DRIVE"]["code"], data)
+        return True
 
     async def cancel_selection(self):
         """Cancel current selection"""
@@ -377,3 +407,15 @@ class VendingMachine:
                 event_tasks.add(task)
 
             await asyncio.sleep(0.01)
+
+    async def _connect_payment_terminal(self):
+        """Connect and initialize the payment terminal."""
+        try:
+            await self.esocket_client.connect()
+            await self.esocket_client.initialize_terminal()
+            self.esocket_connected = True
+            return True
+        except Exception as e:
+            self.log(f"Payment terminal connection failed: {e}")
+            self.esocket_connected = False
+            return False

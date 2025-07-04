@@ -81,30 +81,30 @@ class ESocketClient:
             await self.writer.drain()
             self._last_activity = time.time()
 
-            # Read response header
+            # Read response header with 120s timeout
             response_header = await asyncio.wait_for(
-                self.reader.readexactly(2), timeout=10.0
+                self.reader.readexactly(2), timeout=120.0
             )
 
             # Determine message length
             if response_header == b"\xff\xff":
                 length_bytes = await asyncio.wait_for(
-                    self.reader.readexactly(4), timeout=10.0
+                    self.reader.readexactly(4), timeout=120.0
                 )
                 response_length = struct.unpack(">I", length_bytes)[0]
             else:
                 response_length = response_header[0] * 256 + response_header[1]
 
-            # Read response body
+            # Read response body with 120s timeout
             response_data = await asyncio.wait_for(
-                self.reader.readexactly(response_length), timeout=10.0
+                self.reader.readexactly(response_length), timeout=120.0
             )
             self._last_activity = time.time()
             return response_data.decode("utf-8")
 
         except asyncio.TimeoutError:
             await self._cleanup_connection()
-            raise Exception("Operation timed out")
+            raise Exception("POS operation timed out after 120 seconds")
         except Exception as e:
             await self._cleanup_connection()
             raise Exception(f"Communication error: {e}")
@@ -125,25 +125,13 @@ class ESocketClient:
                 },
             )
 
-            admin = ET.SubElement(
+            ET.SubElement(
                 root,
                 "Esp:Admin",
                 {
                     "TerminalId": terminal_id,
                     "Action": "INIT",
                 },
-            )
-
-            # Only register for essential callbacks and remove PAN prompt
-            ET.SubElement(
-                admin,
-                "Esp:Register",
-                {"Type": "EVENT", "EventId": "PROMPT_INSERT_CARD"},
-            )
-            ET.SubElement(
-                admin,
-                "Esp:Register",
-                {"Type": "EVENT", "EventId": "CARD_INSERTED"},
             )
 
             xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{ET.tostring(root, encoding="unicode")}'

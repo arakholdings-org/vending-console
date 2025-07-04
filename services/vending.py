@@ -293,15 +293,29 @@ class VendingMachine:
                 def payment_callback(task):
                     """Synchronous callback to handle payment completion"""
                     try:
-                        response = task.result()
-                        if "approved" in response.lower():
+                        response = (
+                            task.result()
+                        )  # This is a dict with raw_response and success
+                        if response.get(
+                            "success", False
+                        ) and 'ActionCode="APPROVE"' in response.get(
+                            "raw_response", ""
+                        ):
                             print("\n✓ Payment approved")
                             self.state = "dispensing"
-                            # Trigger dispensing directly
-                            self.direct_drive_selection(selection)
+                            # Queue the dispense command
+                            asyncio.create_task(
+                                self.queue_command(
+                                    "DIRECT_DRIVE",
+                                    bytes([1, 1])
+                                    + selection.to_bytes(2, byteorder="big"),
+                                )
+                            )
                         else:
                             error_msg = (
-                                self._extract_error_message(response)
+                                self._extract_error_message(
+                                    response.get("raw_response", "")
+                                )
                                 or "Transaction declined"
                             )
                             print(f"\n✗ Payment failed: {error_msg}")

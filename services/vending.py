@@ -276,60 +276,73 @@ class VendingMachine:
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _process_payment(self, selection):
-        """Simple payment processing"""
+        """Enhanced payment processing with response handling"""
         if self.state != "paying":
             self.log("Payment attempted in invalid state")
+            await self._send_command(VMC_COMMANDS["ACK"]["code"])
             return
 
         try:
-            # Prevent multiple transactions at once
             async with self._payment_lock:
-                # Generate transaction ID
                 transaction_id = str(int(time.time()) % 1000000).zfill(6)
                 amount = 100  # $1.00 in cents
 
-                print(f"Processing payment ${amount/100:.2f} (TXN: {transaction_id})")
+                print(f"\nInitiating payment ${amount/100:.2f}")
+                print(f"Transaction ID: {transaction_id}")
 
-                # Process payment with timeout
-                try:
-                    response = await self.esocket_client.send_purchase_transaction(
+                def payment_callback(task):
+                    """Synchronous callback to handle payment completion"""
+                    try:
+                        response = task.result()
+                        if "approved" in response.lower():
+                            print("\n✓ Payment approved")
+                            self.state = "dispensing"
+                            # Trigger dispensing directly
+                            self.direct_drive_selection(selection)
+                        else:
+                            error_msg = (
+                                self._extract_error_message(response)
+                                or "Transaction declined"
+                            )
+                            print(f"\n✗ Payment failed: {error_msg}")
+                            self.state = "idle"
+                            self.current_selection = None
+                    except Exception as e:
+                        print(f"\n✗ Payment error: {str(e)}")
+                        self.state = "idle"
+                        self.current_selection = None
+
+                # Start payment transaction as background task
+                transaction_task = asyncio.create_task(
+                    self.esocket_client.send_purchase_transaction(
                         transaction_id=transaction_id, amount=amount
                     )
+                )
 
-                    raw = response.get("raw_response", "<no response>")
-                    print("Raw POS response:", raw)
-
-                    # Only accept a successful Esp:Transaction with ActionCode="APPROVE"
-                    if (
-                        response.get("success")
-                        and "<Esp:Transaction" in raw
-                        and 'ActionCode="APPROVE"' in raw
-                    ):
-                        print("Payment approved")
-                        self.state = "dispensing"
-                        await self.direct_drive_selection(selection)
-                    elif "<Esp:Error" in raw:
-                        print("POS error: Error response received (event or decline)")
-                        self.state = "idle"
-                        self.current_selection = None
-                    else:
-                        print("Payment declined or event response ignored")
-                        self.state = "idle"
-                        self.current_selection = None
-
-                except asyncio.TimeoutError:
-                    print("Payment timeout - transaction cancelled")
-                    self.state = "idle"
-                    self.current_selection = None
-                except Exception as e:
-                    print(f"Payment error (POS comms): {str(e)}")
-                    self.state = "idle"
-                    self.current_selection = None
+                # Add callback to handle completion
+                transaction_task.add_done_callback(payment_callback)
 
         except Exception as e:
-            print(f"Payment error (outer): {str(e)}")
+            print(f"\n✗ System error: {str(e)}")
             self.state = "idle"
             self.current_selection = None
+        finally:
+            await self._send_command(VMC_COMMANDS["ACK"]["code"])
+
+    def _extract_error_message(self, raw_response):
+        """Extract error message from response"""
+        try:
+            if 'ErrorMessage="' in raw_response:
+                start = raw_response.index('ErrorMessage="') + 14
+                end = raw_response.index('"', start)
+                return raw_response[start:end]
+            elif 'ActionCode="' in raw_response:
+                start = raw_response.index('ActionCode="') + 12
+                end = raw_response.index('"', start)
+                return f"Transaction declined: {raw_response[start:end]}"
+        except:
+            pass
+        return None
 
     async def _handle_dispensing_status(self, payload):
         """Simple dispensing status handler"""

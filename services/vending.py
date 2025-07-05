@@ -9,8 +9,8 @@ from utils import VMC_COMMANDS
 
 
 class VendingMachine:
-    POLL_INTERVAL = 0.2  # 200ms as per spec
-    RESPONSE_TIMEOUT = 0.1  # 100ms as per spec
+    POLL_INTERVAL = 0.2
+    RESPONSE_TIMEOUT = 0.1
 
     def __init__(self, port="/dev/ttyUSB0", debug=False):
         self.port = port
@@ -21,26 +21,17 @@ class VendingMachine:
         self.reader = None
         self.writer = None
         self.current_selection = None
-
         self.dispensing_active = False
-
-        # Command queue
         self.command_queue = Queue()
         self.MAX_RETRIES = 5
         self.last_command_time = 0
-
-        # Payment terminal
         self.esocket_client = ESocketClient()
         self.esocket_connected = False
-
-        # Simple state tracking
-        self.state = "idle"  # idle, selecting, paying, dispensing
-
         self.recv_buffer = bytearray()
         self.event_queue = asyncio.Queue()
-
         self._payment_lock = asyncio.Lock()
-        self._command_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent commands
+        self._command_semaphore = asyncio.Semaphore(5)
+        self._current_transaction_task = None
 
     def log(self, *args):
         if self.debug:
@@ -95,26 +86,21 @@ class VendingMachine:
         self.log("Shutdown complete")
 
     def _calculate_xor(self, data):
-        """Calculate XOR checksum"""
         xor_value = 0
         for b in data:
             xor_value ^= b
         return xor_value
 
     def create_packet(self, command, data=None):
-        """Create protocol packet with checksum"""
         packet = self.STX + bytes([command])
 
         if data:
-            packet += bytes([len(data) + 1])  # +1 for packet number
+            packet += bytes([len(data) + 1])
             packet += bytes([self.packet_number]) + data
         else:
             packet += bytes([1]) + bytes([self.packet_number])
 
-        # Add checksum
         packet += bytes([self._calculate_xor(packet)])
-
-        # Increment packet number (1-255)
         self.packet_number = (self.packet_number % 255) + 1
         return packet
 
@@ -243,11 +229,9 @@ class VendingMachine:
             self.log("Invalid SELECT_CANCEL packet")
             return
 
-        # Get packet number and selection
         packet_number = payload[0]
         selection = int.from_bytes(payload[1:3], "big")
 
-        # Avoid duplicate processing by tracking packet numbers
         if (
             hasattr(self, "_last_cancel_packet")
             and self._last_cancel_packet == packet_number
@@ -256,29 +240,38 @@ class VendingMachine:
         self._last_cancel_packet = packet_number
 
         if selection == 0:
-            if self.state != "idle":
-                self.current_selection = None
-                self.state = "idle"
-                print("\nSelection cancelled")
+            # Cancel any running transaction
+            if (
+                self._current_transaction_task
+                and not self._current_transaction_task.done()
+            ):
+                self._current_transaction_task.cancel()
+                try:
+                    await self._current_transaction_task
+                except asyncio.CancelledError:
+                    print("\nTransaction cancelled")
+                except Exception as e:
+                    print(f"\nError cancelling transaction: {e}")
+                finally:
+                    self._current_transaction_task = None
+
+            self.current_selection = None
+            print("\nSelection cancelled")
         else:
-            # Only process if we're not already in a transaction
-            if self.state == "idle":
+            # Only process if no transaction is running
+            if not self._current_transaction_task:
                 self.current_selection = selection
-                self.state = "paying"
                 print(f"\nSelected product #{selection}")
                 await self._process_payment(selection)
             else:
-                self.log(
-                    f"Ignoring selection {selection}, already processing transaction"
-                )
+                self.log("Ignoring selection, transaction in progress")
 
-        # Send acknowledgment
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _process_payment(self, selection):
         """Enhanced payment processing with response handling"""
-        if self.state != "paying":
-            self.log("Payment attempted in invalid state")
+        if self._current_transaction_task:
+            self.log("Payment attempted while transaction in progress")
             await self._send_command(VMC_COMMANDS["ACK"]["code"])
             return
 
@@ -291,18 +284,14 @@ class VendingMachine:
                 print(f"Transaction ID: {transaction_id}")
 
                 def payment_callback(task):
-                    """Synchronous callback to handle payment completion"""
                     try:
-                        response = (
-                            task.result()
-                        )  # This is a dict with raw_response and success
+                        response = task.result()
                         if response.get(
                             "success", False
                         ) and 'ActionCode="APPROVE"' in response.get(
                             "raw_response", ""
                         ):
                             print("\n✓ Payment approved")
-                            self.state = "dispensing"
                             # Queue the dispense command
                             asyncio.create_task(
                                 self.queue_command(
@@ -319,27 +308,23 @@ class VendingMachine:
                                 or "Transaction declined"
                             )
                             print(f"\n✗ Payment failed: {error_msg}")
-                            self.state = "idle"
-                            self.current_selection = None
                     except Exception as e:
                         print(f"\n✗ Payment error: {str(e)}")
-                        self.state = "idle"
+                    finally:
                         self.current_selection = None
+                        self._current_transaction_task = None
 
-                # Start payment transaction as background task
-                transaction_task = asyncio.create_task(
+                self._current_transaction_task = asyncio.create_task(
                     self.esocket_client.send_purchase_transaction(
                         transaction_id=transaction_id, amount=amount
                     )
                 )
-
-                # Add callback to handle completion
-                transaction_task.add_done_callback(payment_callback)
+                self._current_transaction_task.add_done_callback(payment_callback)
 
         except Exception as e:
             print(f"\n✗ System error: {str(e)}")
-            self.state = "idle"
             self.current_selection = None
+            self._current_transaction_task = None
         finally:
             await self._send_command(VMC_COMMANDS["ACK"]["code"])
 

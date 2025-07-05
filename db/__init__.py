@@ -1,3 +1,3 @@
-from .core import db, Query
+from .core import db, query
 
-__all__ = ["db", "Query"]
+__all__ = ["db", "query"]

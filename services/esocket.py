@@ -6,7 +6,6 @@ import json
 import os
 import time
 from typing import Dict, Any
-import subprocess
 
 
 class ESocketClient:
@@ -19,7 +18,7 @@ class ESocketClient:
         self.is_connected = False
         self._last_activity = 0
 
-    def _load_terminal_id(self) -> str:
+    def _load_terminal_id(self):
         """Load terminal ID from config file"""
         config_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "config.json"
@@ -30,7 +29,7 @@ class ESocketClient:
         except Exception as e:
             raise Exception(f"Failed to load terminal ID: {e}")
 
-    async def connect(self) -> bool:
+    async def connect(self):
         """Establish connection to eSocket server with service restart"""
         if self.is_connected:
             return True
@@ -62,13 +61,13 @@ class ESocketClient:
         self.writer = None
         self.reader = None
 
-    def _create_message_header(self, message_length: int) -> bytes:
+    def _create_message_header(self, message_length: int):
         """Create TCP message header based on length"""
         if message_length < 65535:
             return struct.pack("BB", message_length // 256, message_length % 256)
         return b"\xff\xff" + struct.pack(">I", message_length)
 
-    async def _send_message(self, xml_message: str) -> str:
+    async def _send_message(self, xml_message: str):
         """Send XML message and receive response"""
         if not await self.connect():
             raise Exception("Not connected to eSocket")
@@ -109,7 +108,7 @@ class ESocketClient:
             await self._cleanup_connection()
             raise Exception(f"Communication error: {e}")
 
-    async def initialize_terminal(self, terminal_id: str = None) -> Dict[str, Any]:
+    async def initialize_terminal(self, terminal_id: str = None):
         """Initialize terminal session"""
         try:
             if not terminal_id:
@@ -180,7 +179,7 @@ class ESocketClient:
 
     async def send_purchase_transaction(
         self, transaction_id: str, amount: int, currency_code: str = "840"
-    ) -> Dict[str, Any]:
+    ):
         """Send purchase transaction"""
         try:
             root = ET.Element(
@@ -209,7 +208,38 @@ class ESocketClient:
         except Exception as e:
             raise Exception(f"Purchase transaction failed: {e}")
 
-    def _parse_response(self, response: str) -> Dict[str, Any]:
+    async def send_reversal_transaction(
+        self, transaction_id: str, original_transaction_id: str, reason_code: str = None
+    ):
+        """Send reversal transaction"""
+        try:
+            root = ET.Element(
+                "Esp:Interface",
+                {
+                    "Version": "1.0",
+                    "xmlns:Esp": "http://www.mosaicsoftware.com/Postilion/eSocket.POS/",
+                },
+            )
+
+            reversal_attrs = {
+                "TerminalId": self.terminal_id,
+                "TransactionId": transaction_id,
+                "Type": "REVERSAL",
+                "OriginalTransactionId": original_transaction_id,
+            }
+
+            if reason_code:
+                reversal_attrs["ReasonCode"] = reason_code
+
+            ET.SubElement(root, "Esp:Transaction", reversal_attrs)
+
+            xml_message = f'<?xml version="1.0" encoding="UTF-8"?>\n{ET.tostring(root, encoding="unicode")}'
+            response = await self._send_message(xml_message)
+            return self._parse_response(response)
+        except Exception as e:
+            raise Exception(f"Reversal transaction failed: {e}")
+
+    def _parse_response(self, response: str):
         """Parse XML response from eSocket"""
         try:
             root = ET.fromstring(response)

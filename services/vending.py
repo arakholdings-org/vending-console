@@ -32,7 +32,8 @@ class VendingMachine:
         self._payment_lock = asyncio.Lock()
         self._command_semaphore = asyncio.Semaphore(5)
         self._current_transaction_task = None
-        self.state = "idle" 
+        self.state = "idle"
+        self._current_transaction_id = None
 
     def log(self, *args):
         if self.debug:
@@ -279,6 +280,7 @@ class VendingMachine:
         try:
             async with self._payment_lock:
                 transaction_id = str(int(time.time()) % 1000000).zfill(6)
+                self._current_transaction_id = transaction_id
                 amount = 100  # $1.00 in cents
 
                 print(f"\nInitiating payment ${amount/100:.2f}")
@@ -309,8 +311,12 @@ class VendingMachine:
                                 or "Transaction declined"
                             )
                             print(f"\n✗ Payment failed: {error_msg}")
+                            # Queue cancel command on failure
+                            asyncio.create_task(self.cancel_selection())
                     except Exception as e:
                         print(f"\n✗ Payment error: {str(e)}")
+                        # Queue cancel command on error
+                        asyncio.create_task(self.cancel_selection())
                     finally:
                         self.current_selection = None
                         self._current_transaction_task = None
@@ -326,6 +332,8 @@ class VendingMachine:
             print(f"\n✗ System error: {str(e)}")
             self.current_selection = None
             self._current_transaction_task = None
+            # Queue cancel command on system error
+            await self.cancel_selection()
         finally:
             await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
@@ -345,20 +353,61 @@ class VendingMachine:
         return None
 
     async def _handle_dispensing_status(self, payload):
-        """Simple dispensing status handler"""
+        """Enhanced dispensing status handler with reversal support"""
         if len(payload) < 2:
             return
 
         status_code = payload[1]
         selection = self.current_selection
 
+        # Success codes
         if status_code in (0x00, 0x02):
             print(f"Product #{selection} dispensed successfully")
             self.current_selection = None
 
+        # Error codes indicating jam/stuck product
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
-            print(f"Product #{selection} - Error code: {status_code:02X}")
-            self.current_selection = None
+            print(
+                f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})"
+            )
+
+            # Create reversal transaction
+            try:
+                transaction_id = str(int(time.time()) % 1000000).zfill(6)
+
+                # Construct reversal XML message
+                reversal_message = {
+                    "TerminalId": self.esocket_client.terminal_id,
+                    "TransactionId": transaction_id,
+                    "Type": "REVERSAL",
+                    "OriginalTransactionId": self._current_transaction_id,
+                    "ReasonCode": f"Product jam error {status_code:02X}",
+                }
+
+                print("\nInitiating payment reversal due to product jam...")
+
+                # Send reversal to payment terminal
+                response = await self.esocket_client.send_reversal_transaction(
+                    **reversal_message
+                )
+
+                if response.get(
+                    "success", False
+                ) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
+                    print("✓ Payment reversed successfully")
+                else:
+                    error_msg = self._extract_error_message(
+                        response.get("raw_response", "")
+                    )
+                    print(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
+
+            except Exception as e:
+                print(f"✗ Reversal error: {str(e)}")
+
+            finally:
+                # Reset machine state
+                self.current_selection = None
+                await self.cancel_selection()
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 

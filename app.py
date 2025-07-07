@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 import asyncio
 import signal
+
 from services.vending import VendingMachine
 
 
 async def shutdown(signal, vm):
     """Handle shutdown gracefully"""
     print(f"\nReceived {signal.name}, shutting down...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
     await vm.close()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop = asyncio.get_running_loop()
+    loop.stop()
 
 
 async def main():
-    print("🧃 Vending Machine Console")
-    print("=========================")
 
     # Initialize the vending machine
     vm = VendingMachine(port="/dev/ttyUSB0", debug=True)
@@ -27,7 +31,10 @@ async def main():
 
         # Keep running until shutdown
         while True:
-            await asyncio.sleep(1)
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                break
 
     except asyncio.CancelledError:
         print("\nShutdown completed")

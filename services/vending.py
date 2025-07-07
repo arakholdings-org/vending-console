@@ -32,6 +32,7 @@ class VendingMachine:
         self._payment_lock = asyncio.Lock()
         self._command_semaphore = asyncio.Semaphore(5)
         self._current_transaction_task = None
+        self.state = "idle" 
 
     def log(self, *args):
         if self.debug:
@@ -354,11 +355,10 @@ class VendingMachine:
         if status_code in (0x00, 0x02):
             print(f"Product #{selection} dispensed successfully")
             self.current_selection = None
-            self.state = "idle"
+
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
             print(f"Product #{selection} - Error code: {status_code:02X}")
             self.current_selection = None
-            self.state = "idle"
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 

@@ -41,7 +41,7 @@ async def main():
         # Connect and start broker
         if broker.connect():
             print("MQTT Broker connected successfully")
-            broker_task = asyncio.create_task(broker.start())
+            asyncio.create_task(broker.start())
         else:
             print("Failed to connect MQTT Broker")
             return

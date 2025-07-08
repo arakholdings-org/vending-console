@@ -214,17 +214,6 @@ class VendingMachine:
             self.log("Invalid SELECTION_INFO packet")
             return
 
-        # Parse according to spec (section 4.2.1)
-        selection = int.from_bytes(payload[1:3], "big")
-        price = int.from_bytes(payload[3:7], "big")
-        inventory = payload[7]
-        capacity = payload[8]
-        product_id = int.from_bytes(payload[9:11], "big")
-        status = payload[11]
-
-        self.log(
-            f"Selection {selection}: Price={price}, Inventory={inventory}, Status={status}"
-        )
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _handle_selection_cancel(self, payload):
@@ -310,14 +299,46 @@ class VendingMachine:
                             "raw_response", ""
                         ):
                             print("\n✓ Payment approved")
-                            # Queue the dispense command
-                            asyncio.create_task(
-                                self.queue_command(
-                                    "DIRECT_DRIVE",
-                                    bytes([1, 1])
-                                    + selection.to_bytes(2, byteorder="big"),
+
+                            # Get current selection data from database
+                            selection = self.current_selection
+                            selection_data = Prices.get(query.selection == selection)
+
+                            if selection_data:
+                                # dispense product
+                                asyncio.create_task(
+                                    self.queue_command(
+                                        "DIRECT_DRIVE",
+                                        bytes([1, 1])
+                                        + selection.to_bytes(2, byteorder="big"),
+                                    )
                                 )
-                            )
+
+                                # Update inventory in database after dispensing command
+                                current_inventory = selection_data.get("inventory", 0)
+                                new_inventory = max(0, current_inventory - 1)
+
+                                # Update local database
+                                Prices.update(
+                                    {
+                                        "inventory": new_inventory,
+                                    },
+                                    query.selection == selection,
+                                )
+
+                                # Create and queue inventory update command for VMC
+                                inventory_data = selection.to_bytes(
+                                    2, byteorder="big"
+                                ) + bytes([new_inventory])
+                                asyncio.create_task(
+                                    self.queue_command("SET_INVENTORY", inventory_data)
+                                )
+                            else:
+                                print(
+                                    f"\n✗ Error: Could not find selection {selection} in database"
+                                )
+                                asyncio.create_task(self.cancel_selection())
+
                         else:
                             error_msg = (
                                 self._extract_error_message(

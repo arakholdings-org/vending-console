@@ -26,6 +26,8 @@ class MQTTBroker:
         self.client.on_message = self._on_message
         self.running = False
 
+        self.loop = asyncio.get_event_loop()
+
     def _on_connect(self, client, data, flags, rc):
         """Callback when connected to MQTT broker"""
         print(f"Connected to broker {self.broker} with result code {str(rc)}")
@@ -39,8 +41,9 @@ class MQTTBroker:
         try:
             payload = json.loads(msg.payload.decode())
             # Put message in queue for async processing
-            asyncio.create_task(
-                self.message_queue.put({"topic": msg.topic, "payload": payload})
+            asyncio.run_coroutine_threadsafe(
+                self.message_queue.put({"topic": msg.topic, "payload": payload}),
+                self.loop
             )
         except json.JSONDecodeError:
             print(f"Invalid JSON payload received: {msg.payload}")

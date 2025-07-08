@@ -6,6 +6,8 @@ import serial_asyncio
 
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
+from utils.inventory import create_tray_data
+from db import Prices, query
 
 
 class VendingMachine:
@@ -279,9 +281,22 @@ class VendingMachine:
 
         try:
             async with self._payment_lock:
+
+                selection_data = Prices.get(query.selection == selection)
+
+                if not selection_data:
+                    print(f"\n✗ Error: Price not found for selection {selection}")
+                    await self.cancel_selection()
+                    return
+
+                amount = selection_data.get("price", 0)
+                if amount <= 0:
+                    print(f"\n✗ Error: Invalid price for selection {selection}")
+                    await self.cancel_selection()
+                    return
+
                 transaction_id = str(int(time.time()) % 1000000).zfill(6)
                 self._current_transaction_id = transaction_id
-                amount = 100  # $1.00 in cents
 
                 print(f"\nInitiating payment ${amount/100:.2f}")
                 print(f"Transaction ID: {transaction_id}")
@@ -430,6 +445,50 @@ class VendingMachine:
         # Send command immediately for dispensing
         await self._send_command(VMC_COMMANDS["DIRECT_DRIVE"]["code"], data)
         return True
+
+    async def set_product_price(self, tray_number: int, price: int):
+        """Set price for an entire tray
+
+        Args:
+            tray_number: Tray number (0-9)
+            price: Price in cents (0-9999)
+
+        Returns:
+            bool: True if successful, False if validation fails
+        """
+        if price is None or not (0 <= price <= 9999):
+            self.log("Invalid price: must be between 0 and 9999 cents")
+            return False
+
+        if not (0 <= tray_number <= 9):
+            self.log("Invalid tray number: must be between 0 and 9")
+            return False
+
+        selection = 1000 + tray_number
+
+        # Create data packet: selection number (2 bytes) + price (4 bytes)
+        data = selection.to_bytes(2, byteorder="big") + price.to_bytes(
+            4, byteorder="big"
+        )
+
+        # First set price in the vending machine
+        if not await self.queue_command("SET_PRICE", data):
+            return False
+
+        try:
+            # Generate selection data for the tray
+            selections = create_tray_data(tray_number, price)
+
+            # Update prices in database
+            for selection_data in selections:
+                Prices.upsert(
+                    selection_data, query.selection == selection_data["selection"]
+                )
+
+            return True
+        except Exception as e:
+            self.log(f"Database update failed: {e}")
+            return False
 
     async def cancel_selection(self):
         """Cancel current selection"""

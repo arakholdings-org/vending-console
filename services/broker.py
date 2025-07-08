@@ -93,18 +93,45 @@ class MQTTBroker:
 
             tray_number = payload.get("tray")
             price = payload.get("price")
+            selection = payload.get("selection")
 
-            if tray_number is None or price is None:
+            if price is None or (tray_number is None and selection is None):
                 print("Missing required fields in price update payload")
                 return
 
-            # Call the async set_product_price method
-            success = await self.vending_machine.set_product_price(tray_number, price)
+            success = False
+
+            if selection is not None:
+                # Update single selection
+                if not (0 <= selection <= 99):
+                    print("Invalid selection: must be between 0 and 99")
+                    return
+
+                # Create data packet for single selection
+                data = selection.to_bytes(2, byteorder="big") + price.to_bytes(
+                    4, byteorder="big"
+                )
+                success = await self.vending_machine.queue_command("SET_PRICE", data)
+
+                if success:
+                    # Update database for single selection
+                    Prices.update(
+                        {
+                            "price": price,
+                        },
+                        query.selection == selection,
+                    )
+            else:
+                # Update entire tray
+                success = await self.vending_machine.set_product_price(
+                    tray_number, price
+                )
 
             # Publish response
             response = {
                 "success": success,
-                "tray": tray_number,
+                "tray": tray_number if selection is None else None,
+                "selection": selection,
                 "price": price,
             }
             self.client.publish(

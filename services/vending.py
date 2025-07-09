@@ -583,7 +583,8 @@ class VendingMachine:
             self.log("Invalid tray number: must be between 0 and 9")
             return False
 
-        selection = 1000 + tray_number
+        # First selection in tray: tray_number * 10 + 1
+        selection = tray_number * 10 + 1
 
         # Create data packet: selection number (2 bytes) + price (4 bytes)
         data = selection.to_bytes(2, byteorder="big") + price.to_bytes(

@@ -17,7 +17,7 @@ def create_tray_data(tray_number: int, price: int, inventory: int = 5) -> List[D
         raise ValueError("Tray number must be between 0 and 9")
 
     selections = []
-    start_selection = tray_number * 10
+    start_selection = tray_number * 10 + 1  # Start at 1, 11, 21, ...
 
     # Create entries for each selection in the tray
     for i in range(10):  # 10 selections per tray

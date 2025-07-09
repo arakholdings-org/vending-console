@@ -381,7 +381,7 @@ class VendingMachine:
                     await self.cancel_selection()
                     return
 
-                transaction_id = str(int(time.time()) % 1000000).zfill(6)
+                transaction_id = str((int(time.time()) % 900000) + 100000)  # Always 6 digits, never starts with 0
                 self._current_transaction_id = transaction_id
 
                 print(f"\nInitiating payment ${amount/100:.2f}")

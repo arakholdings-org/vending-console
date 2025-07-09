@@ -45,7 +45,9 @@ class VendingMachine:
 
     def log(self, *args):
         if self.debug:
-            print(*args)
+            from datetime import datetime
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{now}]", *args)
 
     async def connect(self):
         """Establish connections with retries"""
@@ -90,9 +92,9 @@ class VendingMachine:
         """Connect to payment terminal with retries"""
         # Restart ESP service first (requires root)
         try:
-            print("Restarting ESP service...")
+            self.log("Restarting ESP service...")
             subprocess.run(["sudo", "systemctl", "restart", "esp.service"], check=True)
-            print("ESP service restarted successfully")
+            self.log("ESP service restarted successfully")
         except subprocess.CalledProcessError as e:
             self.log(f"Failed to restart ESP service: {e}")
         except Exception as e:
@@ -122,11 +124,22 @@ class VendingMachine:
         while self.running:
             try:
                 # Check serial connection
-                if self.serial_connected and (not self.reader or self.reader.at_eof()):
+                serial_needs_reconnect = False
+                if not self.serial_connected:
+                    serial_needs_reconnect = True
+                elif not self.reader or (hasattr(self.reader, 'at_eof') and self.reader.at_eof()):
                     self.log("Serial connection lost, attempting reconnect...")
                     self.serial_connected = False
                     await self._cleanup_serial()
-                    asyncio.create_task(self._connect_serial())
+                    serial_needs_reconnect = True
+
+                if serial_needs_reconnect:
+                    # Try to reconnect serial port
+                    result = await self._connect_serial()
+                    if result:
+                        self.log("Serial reconnected successfully.")
+                    else:
+                        self.log("Serial reconnection attempt failed.")
 
                 # Check payment terminal connection
                 if self.esocket_connected and not self.esocket_client.is_connected:
@@ -206,7 +219,7 @@ class VendingMachine:
             packet = self.create_packet(command, data)
             self.writer.write(packet)
             await self.writer.drain()
-            self.log(f"Sent: {packet.hex(' ').upper()}")
+            
             self.last_command_time = time.time()
             return True
         except Exception as e:
@@ -336,6 +349,7 @@ class VendingMachine:
             return
         self._last_cancel_packet = packet_number
 
+
         if selection == 0:
             # Cancel any running transaction
             if (
@@ -346,22 +360,23 @@ class VendingMachine:
                 try:
                     await self._current_transaction_task
                 except asyncio.CancelledError:
-                    print("\nTransaction cancelled")
+                    self.log("Transaction cancelled")
                 except Exception as e:
-                    print(f"\nError cancelling transaction: {e}")
+                    self.log(f"Error cancelling transaction: {e}")
                 finally:
                     self._current_transaction_task = None
 
             self.current_selection = None
-            print("\nSelection cancelled")
+            self.log("Selection cancelled")
         else:
             # Only process if no transaction is running
-            if not self._current_transaction_task:
+            if not self._current_transaction_task or self._current_transaction_task.done():
                 self.current_selection = selection
-                print(f"\nSelected product #{selection}")
+                self.log(f"Selected product #{selection}")
                 await self._process_payment(selection)
             else:
-                self.log("Ignoring selection, transaction in progress")
+                self.log("Ignoring selection, transaction in progress. Please wait for the current transaction to finish.")
+                self.log("A transaction is already in progress. Please wait for it to complete before making another selection.")
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
@@ -374,7 +389,7 @@ class VendingMachine:
             return
 
         if not self.esocket_connected:
-            print("\n✗ Error: Payment terminal not connected")
+            self.log("✗ Error: Payment terminal not connected")
             await self.cancel_selection()
             return
 
@@ -383,27 +398,27 @@ class VendingMachine:
                 selection_data = Prices.get(query.selection == selection)
 
                 if not selection_data:
-                    print(f"\n✗ Error: Price not found for selection {selection}")
+                    self.log(f"✗ Error: Price not found for selection {selection}")
                     await self.cancel_selection()
                     return
 
                 amount = selection_data.get("price", 0)
                 if amount <= 0:
-                    print(f"\n✗ Error: Invalid price for selection {selection}")
+                    self.log(f"✗ Error: Invalid price for selection {selection}")
                     await self.cancel_selection()
                     return
 
                 transaction_id = str((int(time.time()) % 900000) + 100000)  # Always 6 digits, never starts with 0
                 self._current_transaction_id = transaction_id
 
-                print(f"\nInitiating payment ${amount/100:.2f}")
-                print(f"Transaction ID: {transaction_id}")
+                self.log(f"Initiating payment ${amount/100:.2f}")
+                self.log(f"Transaction ID: {transaction_id}")
 
                 def payment_callback(task):
                     try:
                         response = task.result()
                         if response.get("success", False) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                            print("\n✓ Payment approved")
+                            self.log("✓ Payment approved")
 
                             selection = self.current_selection
                             selection_data = Prices.get(query.selection == selection)
@@ -434,7 +449,7 @@ class VendingMachine:
                                         self.queue_command("SET_INVENTORY", inventory_data)
                                     )
                             else:
-                                print(f"\n✗ Error: Could not dispense - serial disconnected or selection not found")
+                                self.log(f"✗ Error: Could not dispense - serial disconnected or selection not found")
                                 asyncio.create_task(self.cancel_selection())
 
                         else:
@@ -442,10 +457,10 @@ class VendingMachine:
                                 self._extract_error_message(response.get("raw_response", ""))
                                 or "Transaction declined"
                             )
-                            print(f"\n✗ Payment failed: {error_msg}")
+                            self.log(f"✗ Payment failed: {error_msg}")
                             asyncio.create_task(self.cancel_selection())
                     except Exception as e:
-                        print(f"\n✗ Payment error: {str(e)}")
+                        self.log(f"✗ Payment error: {str(e)}")
                         asyncio.create_task(self.cancel_selection())
                     finally:
                         self.current_selection = None
@@ -459,7 +474,7 @@ class VendingMachine:
                 self._current_transaction_task.add_done_callback(payment_callback)
 
         except Exception as e:
-            print(f"\n✗ System error: {str(e)}")
+            self.log(f"✗ System error: {str(e)}")
             self.current_selection = None
             self._current_transaction_task = None
             await self.cancel_selection()
@@ -487,19 +502,23 @@ class VendingMachine:
         if len(payload) < 2:
             return
 
+
         status_code = payload[1]
+        # Use the selection from the payload if available, else fallback to self.current_selection
         selection = self.current_selection
+        if len(payload) >= 3:
+            selection_from_payload = int.from_bytes(payload[2:4], "big")
+            if selection_from_payload != 0:
+                selection = selection_from_payload
 
         # Success codes
         if status_code in (0x00, 0x02):
-            print(f"Product #{selection} dispensed successfully")
+            self.log(f"Product #{selection} dispensed successfully")
             self.current_selection = None
 
         # Error codes indicating jam/stuck product
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
-            print(
-                f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})"
-            )
+            self.log(f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})")
 
             # Create reversal transaction
             try:
@@ -514,7 +533,7 @@ class VendingMachine:
                     "ReasonCode": f"Product jam error {status_code:02X}",
                 }
 
-                print("\nInitiating payment reversal due to product jam...")
+                self.log("Initiating payment reversal due to product jam...")
 
                 # Send reversal to payment terminal
                 response = await self.esocket_client.send_reversal_transaction(
@@ -524,15 +543,15 @@ class VendingMachine:
                 if response.get(
                     "success", False
                 ) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                    print("✓ Payment reversed successfully")
+                    self.log("✓ Payment reversed successfully")
                 else:
                     error_msg = self._extract_error_message(
                         response.get("raw_response", "")
                     )
-                    print(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
+                    self.log(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
 
             except Exception as e:
-                print(f"✗ Reversal error: {str(e)}")
+                self.log(f"✗ Reversal error: {str(e)}")
 
             finally:
                 # Reset machine state

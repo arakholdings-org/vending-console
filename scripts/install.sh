@@ -7,9 +7,8 @@ cleanup() {
     echo "Cleaning up..."
     # Remove partially created files on failure
     if [ $? -ne 0 ]; then
-        systemctl stop vending-console 2>/dev/null || true
-        rm -f /etc/systemd/system/vending-console.service
         rm -f /etc/udev/rules.d/99-vending-console.rules
+        rm -f /etc/cron.d/vending-console
     fi
 }
 
@@ -29,13 +28,11 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Check for existing installation
-if [ -f "/etc/systemd/system/vending-console.service" ]; then
-    read -p "Existing installation found. Do you want to remove it? (y/n) " -n 1 -r
+if [ -f "/etc/cron.d/vending-console" ]; then
+    read -p "Existing cron installation found. Do you want to remove it? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl stop vending-console
-        systemctl disable vending-console
-        rm -f /etc/systemd/system/vending-console.service
+        rm -f /etc/cron.d/vending-console
         rm -f /etc/udev/rules.d/99-vending-console.rules
         rm -rf "$LOG_DIR"
     else
@@ -57,37 +54,48 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Install system dependencies
 echo "Installing system dependencies..."
 apt-get update
-
-# Install Python dependencies
-echo "Installing Python packages..."
-cd "$PROJECT_DIR"
-
-# Get actual user's home directory
-USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
-
-# Source UV environment or use full path
-if [ -f "$USER_HOME/.local/bin/uv" ]; then
-    UV_CMD="$USER_HOME/.local/bin/uv"
-elif [ -f "/usr/local/bin/uv" ]; then
-    UV_CMD="/usr/local/bin/uv"
-else
-    echo -e "${RED}UV package manager not found. Please install it first.${NC}"
-    exit 1
-fi
-
-# Execute UV with preserved PATH
-sudo -E -u "$ACTUAL_USER" bash -c "export UV_CACHE_DIR=$USER_HOME/.cache/uv && export HOME=$USER_HOME && PATH=$PATH:$USER_HOME/.local/bin $UV_CMD sync"
+apt-get install -y python3 python3-pip python3-venv
 
 # Create udev rule for USB serial device
 echo "Setting up udev rules..."
 cat > /etc/udev/rules.d/99-vending-console.rules << EOF
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="ttyVending", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="ttyVending", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="ttyVending", MODE="0666"
 EOF
 
 # Reload udev rules
 udevadm control --reload-rules
 udevadm trigger
 
+# Install Python dependencies
+echo "Installing Python packages..."
+cd "$PROJECT_DIR"
+
+# Create virtual environment
+echo "Creating Python virtual environment..."
+python3 -m venv "$PROJECT_DIR/.venv"
+source "$PROJECT_DIR/.venv/bin/activate"
+
+# Get actual user's home directory
+USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+
+# Try to use UV if available, otherwise use pip directly
+if [ -f "$USER_HOME/.local/bin/uv" ] || [ -f "/usr/local/bin/uv" ]; then
+    echo "Using UV package manager..."
+    if [ -f "$USER_HOME/.local/bin/uv" ]; then
+        UV_CMD="$USER_HOME/.local/bin/uv"
+    else
+        UV_CMD="/usr/local/bin/uv"
+    fi
+    sudo -E -u "$ACTUAL_USER" bash -c "export UV_CACHE_DIR=$USER_HOME/.cache/uv && export HOME=$USER_HOME && PATH=$PATH:$USER_HOME/.local/bin $UV_CMD sync"
+else
+    echo "Installing with pip..."
+    pip install paho-mqtt pyserial pyserial-asyncio tinydb
+fi
+
+# Deactivate virtual environment
+deactivate
 
 # Create log directory
 echo "Creating log directory..."
@@ -95,34 +103,31 @@ LOG_DIR="/var/log/vending-console"
 mkdir -p $LOG_DIR
 chown $ACTUAL_USER:$ACTUAL_USER $LOG_DIR
 
-# Create systemd service
-echo "Creating systemd service..."
-cat > /etc/systemd/system/vending-console.service << EOF
-[Unit]
-Description=Vending Console Service
-After=network.target
+# Create startup script
+echo "Creating startup script..."
+STARTUP_SCRIPT="$PROJECT_DIR/scripts/start_vending.sh"
 
-[Service]
-Type=simple
-User=$ACTUAL_USER
-WorkingDirectory=$PROJECT_DIR
-Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=$PROJECT_DIR
-StandardOutput=append:$LOG_DIR/vending-console.log
-StandardError=append:$LOG_DIR/vending-console.error.log
-ExecStart=$PROJECT_DIR/.venv/bin/python $PROJECT_DIR/app.py
-Restart=always
-RestartSec=3
+cat > "$STARTUP_SCRIPT" << EOF
+#!/bin/bash
 
-[Install]
-WantedBy=multi-user.target
+# Redirect output to log files
+exec >> "$LOG_DIR/vending-console.log" 2>> "$LOG_DIR/vending-console.error.log"
+
+echo "Starting Vending Console at \$(date)"
+cd "$PROJECT_DIR"
+"$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/app.py"
 EOF
 
-# Set correct permissions
-chmod 644 /etc/systemd/system/vending-console.service
+chmod +x "$STARTUP_SCRIPT"
 
+# Create cron job entry
+echo "Setting up cron job to run on reboot..."
+cat > /etc/cron.d/vending-console << EOF
+# Vending Console application - runs at system startup
+@reboot $ACTUAL_USER $STARTUP_SCRIPT
+EOF
 
-# Add before systemd reload
+chmod 644 /etc/cron.d/vending-console
 
 echo "Setting up log rotation..."
 cat > /etc/logrotate.d/vending-console << EOF
@@ -136,29 +141,25 @@ $LOG_DIR/*.log {
     create 640 $ACTUAL_USER $ACTUAL_USER
 }
 EOF
-# Reload systemd
-systemctl daemon-reload
-
-# Enable and start service
-echo "Enabling and starting service..."
-systemctl enable vending-console
-systemctl start vending-console
 
 # Make scripts executable
 chmod +x "$PROJECT_DIR/scripts/install.sh"
 chmod +x "$PROJECT_DIR/scripts/uninstall.sh"
 
-echo -e "${GREEN}Setup completed successfully!${NC}"
-echo "You can check the service status with: systemctl status vending-console"
-echo "View logs with: journalctl -u vending-console -f"
+# Update app.py to use ttyVending instead of ttyUSB0
+echo "Updating configuration to use ttyVending..."
+if [ -f "$PROJECT_DIR/app.py" ]; then
+    sed -i 's|"/dev/ttyUSB0"|"/dev/ttyVending"|g' "$PROJECT_DIR/app.py"
+fi
 
 echo -e "${GREEN}Setup completed successfully!${NC}"
-echo "You can check the service status with: systemctl status vending-console"
-echo "View logs with: journalctl -u vending-console -f"
-
-echo -e "${GREEN}Setup completed successfully!${NC}"
-echo "You can check the service status with: systemctl status vending-console"
-echo "View logs with: journalctl -u vending-console -f"
+echo "A cron job has been set up to run the application at system startup."
+echo "The application will run with the following command:"
+echo "  $STARTUP_SCRIPT"
+echo "Log files will be stored in: $LOG_DIR"
+echo "To test the script without rebooting, run:"
+echo "  $STARTUP_SCRIPT"
+echo "You may need to reboot the system for the udev rules to take effect."
 
 
 

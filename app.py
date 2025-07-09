@@ -22,7 +22,7 @@ async def shutdown(signal, vm, broker):
 
 async def main():
     # Initialize the vending machine
-    vm = VendingMachine(port="/dev/ttyUSB0", debug=True)
+    vm = VendingMachine(port="/dev/ttyVending", debug=True)
 
     # Initialize the MQTT broker with vending machine instance
     broker = MQTTBroker(vending_machine=vm)

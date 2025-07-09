@@ -1,6 +1,7 @@
 import asyncio
 import time
 from asyncio import Queue
+import subprocess
 
 import serial_asyncio
 
@@ -87,6 +88,17 @@ class VendingMachine:
 
     async def _connect_payment_terminal(self):
         """Connect to payment terminal with retries"""
+        # Restart ESP service first (requires root)
+        try:
+            print("Restarting ESP service...")
+            subprocess.run(["sudo", "systemctl", "restart", "esp.service"], check=True)
+            print("ESP service restarted successfully")
+        except subprocess.CalledProcessError as e:
+            self.log(f"Failed to restart ESP service: {e}")
+        except Exception as e:
+            self.log(f"Error restarting ESP service: {e}")
+        
+        # Now attempt connection with retries
         delay = self._reconnect_delay
         while self.running and not self.esocket_connected:
             try:
@@ -637,12 +649,31 @@ class VendingMachine:
 
     async def _connect_payment_terminal(self):
         """Connect and initialize the payment terminal."""
+        # Restart ESP service first (requires root)
         try:
-            await self.esocket_client.connect()
-            await self.esocket_client.initialize_terminal()
-            self.esocket_connected = True
-            return True
+            print("Restarting ESP service...")
+            subprocess.run(["sudo", "systemctl", "restart", "esp.service"], check=True)
+            print("ESP service restarted successfully")
+        except subprocess.CalledProcessError as e:
+            self.log(f"Failed to restart ESP service: {e}")
         except Exception as e:
-            self.log(f"Payment terminal connection failed: {e}")
-            self.esocket_connected = False
-            return False
+            self.log(f"Error restarting ESP service: {e}")
+        
+        # Now attempt connection with retries
+        delay = self._reconnect_delay
+        while self.running and not self.esocket_connected:
+            try:
+                if await self.esocket_client.connect():
+                    await self.esocket_client.initialize_terminal()
+                    self.esocket_connected = True
+                    self.log("Payment terminal connection established")
+                    delay = self._reconnect_delay  # Reset delay on success
+                    return True
+                else:
+                    raise Exception("Connection failed")
+            except Exception as e:
+                self.log(f"Payment terminal connection failed: {e}, retrying in {delay}s...")
+                self.esocket_connected = False
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self._max_reconnect_delay)
+        return False

@@ -25,23 +25,43 @@ class MQTTBroker:
         self.client = mqtt.Client()
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
+        self.client.on_disconnect = self._on_disconnect
         self.running = False
+        self.connected = False
 
         self.loop = asyncio.get_event_loop()
+        
+        # Connection monitoring
+        self._connection_monitor_task = None
+        self._reconnect_delay = 5  # seconds
+        self._max_reconnect_delay = 60  # seconds
 
     def _on_connect(self, client, data, flags, rc):
         """Callback when connected to MQTT broker"""
-        print(f"Connected to broker {self.broker} with result code {str(rc)}")
+        if rc == 0:
+            self.connected = True
+            print(f"Connected to MQTT broker {self.broker} with result code {str(rc)}")
 
-        # Subscribe to topics
-        topics = [
-            f"vmc/{self.machine_id}/set_price",
-            f"vmc/{self.machine_id}/get_prices",
-            f"vmc/{self.machine_id}/set_inventory",
-            f"vmc/{self.machine_id}/set_capacity",
-        ]
-        for topic in topics:
-            self.client.subscribe(topic)
+            # Subscribe to topics
+            topics = [
+                f"vmc/{self.machine_id}/set_price",
+                f"vmc/{self.machine_id}/get_prices",
+                f"vmc/{self.machine_id}/set_inventory",
+                f"vmc/{self.machine_id}/set_capacity",
+            ]
+            for topic in topics:
+                self.client.subscribe(topic)
+        else:
+            self.connected = False
+            print(f"Failed to connect to MQTT broker, return code {rc}")
+
+    def _on_disconnect(self, client, userdata, rc):
+        """Callback when disconnected from MQTT broker"""
+        self.connected = False
+        if rc != 0:
+            print(f"Unexpected disconnection from MQTT broker, code: {rc}")
+        else:
+            print("Disconnected from MQTT broker")
 
     def _on_message(self, client, data, msg):
         """Queue incoming messages for async processing"""
@@ -66,29 +86,77 @@ class MQTTBroker:
         """Process messages from queue"""
         while self.running:
             try:
-                message = await self.message_queue.get()
+                message = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
+                
+                # Only process messages if connected
+                if not self.connected:
+                    print("Skipping message processing - MQTT not connected")
+                    continue
+                    
                 topic = message["topic"]
                 payload = message["payload"]
 
                 if topic == f"vmc/{self.machine_id}/set_price":
                     await self._handle_price_update(payload)
-                elif topic == f"vmc/{self.machine_id}/get_prices":  # Add new condition
+                elif topic == f"vmc/{self.machine_id}/get_prices":
                     await self._handle_get_prices()
                 elif topic == f"vmc/{self.machine_id}/set_inventory":
                     await self._handle_inventory_update(payload)
                 elif topic == f"vmc/{self.machine_id}/set_capacity":
                     await self._handle_capacity_update(payload)
 
+            except asyncio.TimeoutError:
+                # Timeout is normal, continue
+                continue
             except Exception as e:
                 print(f"Error processing message from queue: {e}")
             finally:
-                self.message_queue.task_done()
+                try:
+                    self.message_queue.task_done()
+                except:
+                    pass
+
+    async def _monitor_connection(self):
+        """Monitor MQTT connection and reconnect if needed"""
+        delay = self._reconnect_delay
+        
+        while self.running:
+            try:
+                if not self.connected:
+                    print(f"MQTT not connected, attempting reconnect in {delay}s...")
+                    await asyncio.sleep(delay)
+                    
+                    if self.running:  # Check if still running after sleep
+                        if self._connect_internal():
+                            delay = self._reconnect_delay  # Reset delay on success
+                        else:
+                            delay = min(delay * 2, self._max_reconnect_delay)
+                else:
+                    delay = self._reconnect_delay  # Reset delay when connected
+                    await asyncio.sleep(5)  # Check every 5 seconds when connected
+                    
+            except Exception as e:
+                print(f"Connection monitor error: {e}")
+                await asyncio.sleep(delay)
+
+    def _connect_internal(self):
+        """Internal connection method"""
+        try:
+            self.client.connect(self.broker, self.port, 60)
+            return True
+        except Exception as e:
+            print(f"Failed to connect to MQTT broker: {e}")
+            return False
 
     async def _handle_price_update(self, payload):
-        """Handle price update messages from MQTT"""
+        """Handle price update messages from MQTT with connection checks"""
         try:
             if not self.vending_machine:
                 print("No vending machine instance available")
+                return
+
+            if not self.connected:
+                print("Cannot handle price update - MQTT not connected")
                 return
 
             tray_number = payload.get("tray")
@@ -116,9 +184,7 @@ class MQTTBroker:
                 if success:
                     # Update database for single selection
                     Prices.update(
-                        {
-                            "price": price,
-                        },
+                        {"price": price},
                         query.selection == selection,
                     )
             else:
@@ -127,29 +193,26 @@ class MQTTBroker:
                     tray_number, price
                 )
 
-            # Publish response
-            response = {
-                "success": success,
-                "tray": tray_number if selection is None else None,
-                "selection": selection,
-                "price": price,
-            }
-            self.client.publish(
-                f"vmc/{self.machine_id}/price_update_status", json.dumps(response)
-            )
+            # Publish response only if connected
+            if self.connected:
+                response = {
+                    "success": success,
+                    "tray": tray_number if selection is None else None,
+                    "selection": selection,
+                    "price": price,
+                }
+                self.client.publish(
+                    f"vmc/{self.machine_id}/price_update_status", json.dumps(response)
+                )
 
         except Exception as e:
             print(f"Error handling price update: {e}")
-            # Publish error response
-            self.client.publish(
-                f"vmc/{self.machine_id}/price_update_status",
-                json.dumps(
-                    {
-                        "success": False,
-                        "error": str(e),
-                    }
-                ),
-            )
+            # Publish error response only if connected
+            if self.connected:
+                self.client.publish(
+                    f"vmc/{self.machine_id}/price_update_status",
+                    json.dumps({"success": False, "error": str(e)}),
+                )
 
     async def _handle_inventory_update(self, payload):
         """Handle inventory update messages"""
@@ -338,21 +401,34 @@ class MQTTBroker:
 
     def connect(self):
         """Connect to MQTT broker"""
-        try:
-            self.client.connect(self.broker, self.port, 60)
-            return True
-        except Exception as e:
-            print(f"Failed to connect to broker: {e}")
-            return False
+        return self._connect_internal()
 
     async def start(self):
         """Start broker operations"""
         self.running = True
-        self.client.loop_start()  # Start MQTT client in separate thread
-        await self.process_messages()  # Start processing messages
+        
+        # Start connection monitoring
+        self._connection_monitor_task = asyncio.create_task(self._monitor_connection())
+        
+        # Start MQTT client
+        self.client.loop_start()
+        
+        # Start processing messages
+        await self.process_messages()
 
     async def stop(self):
         """Stop broker operations"""
         self.running = False
+        self.connected = False
+        
+        # Cancel connection monitoring
+        if self._connection_monitor_task:
+            self._connection_monitor_task.cancel()
+            try:
+                await self._connection_monitor_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Stop MQTT client
         self.client.loop_stop()
         self.client.disconnect()

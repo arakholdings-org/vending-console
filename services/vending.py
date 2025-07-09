@@ -36,6 +36,11 @@ class VendingMachine:
         self._current_transaction_task = None
         self.state = "idle"
         self._current_transaction_id = None
+        # Connection monitoring
+        self.serial_connected = False
+        self._connection_monitor_task = None
+        self._reconnect_delay = 5  # seconds
+        self._max_reconnect_delay = 60  # seconds
 
     def log(self, *args):
         if self.debug:
@@ -43,41 +48,111 @@ class VendingMachine:
 
     async def connect(self):
         """Establish connections with retries"""
-        try:
-            # Connect serial
-            self.reader, self.writer = await serial_asyncio.open_serial_connection(
-                url=self.port,
-                baudrate=57600,
-                parity="N",
-                stopbits=1,
-                bytesize=8,
-            )
+        self.running = True
 
-            self.running = True
+        # Start connection monitoring task
+        if not self._connection_monitor_task:
+            self._connection_monitor_task = asyncio.create_task(self._monitor_connections())
 
-            # Initialize payment terminal once
-            if not self.esocket_connected:
-                await self._connect_payment_terminal()
+        # Initial connection attempts
+        await self._connect_serial()
+        await self._connect_payment_terminal()
 
-            # Start communication and event handling
-            asyncio.create_task(self._communication_loop())
-            asyncio.create_task(self._handle_events())
+        # Start communication and event handling
+        asyncio.create_task(self._communication_loop())
+        asyncio.create_task(self._handle_events())
 
-        except Exception as e:
-            self.log(f"Connection failed: {e}")
-            raise
+    async def _connect_serial(self):
+        """Connect to serial port with retries"""
+        delay = self._reconnect_delay
+        while self.running and not self.serial_connected:
+            try:
+                self.reader, self.writer = await serial_asyncio.open_serial_connection(
+                    url=self.port,
+                    baudrate=57600,
+                    parity="N",
+                    stopbits=1,
+                    bytesize=8,
+                )
+                self.serial_connected = True
+                self.log(f"Serial connection established on {self.port}")
+                delay = self._reconnect_delay  # Reset delay on success
+                return True
+            except Exception as e:
+                self.log(f"Serial connection failed: {e}, retrying in {delay}s...")
+                self.serial_connected = False
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self._max_reconnect_delay)
+        return False
+
+    async def _connect_payment_terminal(self):
+        """Connect to payment terminal with retries"""
+        delay = self._reconnect_delay
+        while self.running and not self.esocket_connected:
+            try:
+                if await self.esocket_client.connect():
+                    await self.esocket_client.initialize_terminal()
+                    self.esocket_connected = True
+                    self.log("Payment terminal connection established")
+                    delay = self._reconnect_delay  # Reset delay on success
+                    return True
+                else:
+                    raise Exception("Connection failed")
+            except Exception as e:
+                self.log(f"Payment terminal connection failed: {e}, retrying in {delay}s...")
+                self.esocket_connected = False
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self._max_reconnect_delay)
+        return False
+
+    async def _monitor_connections(self):
+        """Monitor and reconnect when connections are lost"""
+        while self.running:
+            try:
+                # Check serial connection
+                if self.serial_connected and (not self.reader or self.reader.at_eof()):
+                    self.log("Serial connection lost, attempting reconnect...")
+                    self.serial_connected = False
+                    await self._cleanup_serial()
+                    asyncio.create_task(self._connect_serial())
+
+                # Check payment terminal connection
+                if self.esocket_connected and not self.esocket_client.is_connected:
+                    self.log("Payment terminal connection lost, attempting reconnect...")
+                    self.esocket_connected = False
+                    asyncio.create_task(self._connect_payment_terminal())
+
+                await asyncio.sleep(5)  # Check every 5 seconds
+            except Exception as e:
+                self.log(f"Connection monitor error: {e}")
+                await asyncio.sleep(5)
+
+    async def _cleanup_serial(self):
+        """Clean up serial connection"""
+        if self.writer:
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except:
+                pass
+        self.writer = None
+        self.reader = None
 
     async def close(self):
         """Clean shutdown"""
         self.running = False
 
-        # Close serial connection
-        if self.writer:
-            self.writer.close()
+        # Cancel connection monitoring
+        if self._connection_monitor_task:
+            self._connection_monitor_task.cancel()
             try:
-                await self.writer.wait_closed()
-            except:
+                await self._connection_monitor_task
+            except asyncio.CancelledError:
                 pass
+
+        # Close serial connection
+        await self._cleanup_serial()
+        self.serial_connected = False
 
         # Close payment terminal
         if self.esocket_connected:
@@ -86,6 +161,7 @@ class VendingMachine:
                 await self.esocket_client.disconnect()
             except:
                 pass
+            self.esocket_connected = False
 
         self.log("Shutdown complete")
 
@@ -109,31 +185,47 @@ class VendingMachine:
         return packet
 
     async def _send_command(self, command, data=None):
-        """Send a command to the machine"""
-        packet = self.create_packet(command, data)
-        self.writer.write(packet)
-        await self.writer.drain()
-        self.log(f"Sent: {packet.hex(' ').upper()}")
-        self.last_command_time = time.time()
+        """Send a command to the machine with connection check"""
+        if not self.serial_connected or not self.writer:
+            self.log("Cannot send command: serial not connected")
+            return False
+
+        try:
+            packet = self.create_packet(command, data)
+            self.writer.write(packet)
+            await self.writer.drain()
+            self.log(f"Sent: {packet.hex(' ').upper()}")
+            self.last_command_time = time.time()
+            return True
+        except Exception as e:
+            self.log(f"Failed to send command: {e}")
+            self.serial_connected = False
+            return False
 
     async def _communication_loop(self):
-        """Optimized communication loop"""
+        """Optimized communication loop with connection handling"""
         while self.running:
             try:
-                data = await self.reader.read(1024)
+                if not self.serial_connected or not self.reader:
+                    await asyncio.sleep(1)
+                    continue
+
+                data = await asyncio.wait_for(self.reader.read(1024), timeout=1.0)
                 if data:
                     self.recv_buffer.extend(data)
                     await self._process_incoming_data()
 
-                # Only send ACKs when needed
-                if self.state == "dispensing":
+                # Only send ACKs when needed and connected
+                if self.state == "dispensing" and self.serial_connected:
                     await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
+            except asyncio.TimeoutError:
+                # Timeout is normal, continue
+                pass
             except Exception as e:
                 self.log(f"Communication error: {e}")
-                if not self.running:
-                    break
-                await asyncio.sleep(0.01)
+                self.serial_connected = False
+                await asyncio.sleep(0.1)
 
     async def _process_incoming_data(self):
         """Process all available data in buffer"""
@@ -262,15 +354,20 @@ class VendingMachine:
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _process_payment(self, selection):
-        """Enhanced payment processing with response handling"""
+        """Enhanced payment processing with connection checks"""
         if self._current_transaction_task:
             self.log("Payment attempted while transaction in progress")
-            await self._send_command(VMC_COMMANDS["ACK"]["code"])
+            if self.serial_connected:
+                await self._send_command(VMC_COMMANDS["ACK"]["code"])
+            return
+
+        if not self.esocket_connected:
+            print("\n✗ Error: Payment terminal not connected")
+            await self.cancel_selection()
             return
 
         try:
             async with self._payment_lock:
-
                 selection_data = Prices.get(query.selection == selection)
 
                 if not selection_data:
@@ -293,24 +390,18 @@ class VendingMachine:
                 def payment_callback(task):
                     try:
                         response = task.result()
-                        if response.get(
-                            "success", False
-                        ) and 'ActionCode="APPROVE"' in response.get(
-                            "raw_response", ""
-                        ):
+                        if response.get("success", False) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
                             print("\n✓ Payment approved")
 
-                            # Get current selection data from database
                             selection = self.current_selection
                             selection_data = Prices.get(query.selection == selection)
 
-                            if selection_data:
+                            if selection_data and self.serial_connected:
                                 # dispense product
                                 asyncio.create_task(
                                     self.queue_command(
                                         "DIRECT_DRIVE",
-                                        bytes([1, 1])
-                                        + selection.to_bytes(2, byteorder="big"),
+                                        bytes([1, 1]) + selection.to_bytes(2, byteorder="big"),
                                     )
                                 )
 
@@ -320,38 +411,29 @@ class VendingMachine:
 
                                 # Update local database
                                 Prices.update(
-                                    {
-                                        "inventory": new_inventory,
-                                    },
+                                    {"inventory": new_inventory},
                                     query.selection == selection,
                                 )
 
                                 # Create and queue inventory update command for VMC
-                                inventory_data = selection.to_bytes(
-                                    2, byteorder="big"
-                                ) + bytes([new_inventory])
-                                asyncio.create_task(
-                                    self.queue_command("SET_INVENTORY", inventory_data)
-                                )
+                                if self.serial_connected:
+                                    inventory_data = selection.to_bytes(2, byteorder="big") + bytes([new_inventory])
+                                    asyncio.create_task(
+                                        self.queue_command("SET_INVENTORY", inventory_data)
+                                    )
                             else:
-                                print(
-                                    f"\n✗ Error: Could not find selection {selection} in database"
-                                )
+                                print(f"\n✗ Error: Could not dispense - serial disconnected or selection not found")
                                 asyncio.create_task(self.cancel_selection())
 
                         else:
                             error_msg = (
-                                self._extract_error_message(
-                                    response.get("raw_response", "")
-                                )
+                                self._extract_error_message(response.get("raw_response", ""))
                                 or "Transaction declined"
                             )
                             print(f"\n✗ Payment failed: {error_msg}")
-                            # Queue cancel command on failure
                             asyncio.create_task(self.cancel_selection())
                     except Exception as e:
                         print(f"\n✗ Payment error: {str(e)}")
-                        # Queue cancel command on error
                         asyncio.create_task(self.cancel_selection())
                     finally:
                         self.current_selection = None
@@ -368,10 +450,10 @@ class VendingMachine:
             print(f"\n✗ System error: {str(e)}")
             self.current_selection = None
             self._current_transaction_task = None
-            # Queue cancel command on system error
             await self.cancel_selection()
         finally:
-            await self._send_command(VMC_COMMANDS["ACK"]["code"])
+            if self.serial_connected:
+                await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     def _extract_error_message(self, raw_response):
         """Extract error message from response"""
@@ -448,7 +530,11 @@ class VendingMachine:
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def queue_command(self, command_name, data=None):
-        """Queue a command with concurrency control"""
+        """Queue a command with connection check"""
+        if not self.serial_connected:
+            self.log(f"Cannot queue command {command_name}: serial not connected")
+            return False
+
         async with self._command_semaphore:
             if command_name in VMC_COMMANDS:
                 cmd_code = VMC_COMMANDS[command_name]["code"]

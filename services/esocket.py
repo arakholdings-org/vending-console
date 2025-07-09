@@ -17,6 +17,8 @@ class ESocketClient:
         self.terminal_id = None
         self.is_connected = False
         self._last_activity = 0
+        self._reconnect_delay = 5  # seconds
+        self._max_reconnect_delay = 60  # seconds
 
     def _load_terminal_id(self):
         """Load terminal ID from config file"""
@@ -30,14 +32,13 @@ class ESocketClient:
             raise Exception(f"Failed to load terminal ID: {e}")
 
     async def connect(self):
-        """Establish connection to eSocket server with service restart"""
+        """Establish connection to eSocket server with automatic retry"""
         if self.is_connected:
             return True
 
-        # Try to connect to the service
         try:
             self.reader, self.writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), timeout=5.0
+                asyncio.open_connection(self.host, self.port), timeout=10.0
             )
             self.is_connected = True
             self._last_activity = time.time()
@@ -45,9 +46,13 @@ class ESocketClient:
             return True
 
         except Exception as e:
-            print(f"Connection failed: {e}")
+            print(f"eSocket connection failed: {e}")
             await self._cleanup_connection()
             return False
+
+    async def disconnect(self):
+        """Disconnect from eSocket server"""
+        await self._cleanup_connection()
 
     async def _cleanup_connection(self):
         """Clean up any existing connection"""
@@ -68,45 +73,62 @@ class ESocketClient:
         return b"\xff\xff" + struct.pack(">I", message_length)
 
     async def _send_message(self, xml_message: str):
-        """Send XML message and receive response"""
-        if not await self.connect():
-            raise Exception("Not connected to eSocket")
+        """Send XML message and receive response with connection handling"""
+        max_retries = 3
+        retry_count = 0
 
-        try:
-            # Prepare and send message
-            message_bytes = xml_message.encode("utf-8")
-            header = self._create_message_header(len(message_bytes))
-            self.writer.write(header + message_bytes)
-            await self.writer.drain()
-            self._last_activity = time.time()
+        while retry_count < max_retries:
+            if not await self.connect():
+                retry_count += 1
+                if retry_count < max_retries:
+                    await asyncio.sleep(self._reconnect_delay)
+                    continue
+                else:
+                    raise Exception("Failed to establish connection after retries")
 
-            # Read response header with 120s timeout
-            response_header = await asyncio.wait_for(
-                self.reader.readexactly(2), timeout=120.0
-            )
+            try:
+                # Prepare and send message
+                message_bytes = xml_message.encode("utf-8")
+                header = self._create_message_header(len(message_bytes))
+                self.writer.write(header + message_bytes)
+                await self.writer.drain()
+                self._last_activity = time.time()
 
-            # Determine message length
-            if response_header == b"\xff\xff":
-                length_bytes = await asyncio.wait_for(
-                    self.reader.readexactly(4), timeout=120.0
+                # Read response header with 120s timeout
+                response_header = await asyncio.wait_for(
+                    self.reader.readexactly(2), timeout=120.0
                 )
-                response_length = struct.unpack(">I", length_bytes)[0]
-            else:
-                response_length = response_header[0] * 256 + response_header[1]
 
-            # Read response body with 120s timeout
-            response_data = await asyncio.wait_for(
-                self.reader.readexactly(response_length), timeout=120.0
-            )
-            self._last_activity = time.time()
-            return response_data.decode("utf-8")
+                # Determine message length
+                if response_header == b"\xff\xff":
+                    length_bytes = await asyncio.wait_for(
+                        self.reader.readexactly(4), timeout=120.0
+                    )
+                    response_length = struct.unpack(">I", length_bytes)[0]
+                else:
+                    response_length = response_header[0] * 256 + response_header[1]
 
-        except asyncio.TimeoutError:
-            await self._cleanup_connection()
-            raise Exception("POS operation timed out after 120 seconds")
-        except Exception as e:
-            await self._cleanup_connection()
-            raise Exception(f"Communication error: {e}")
+                # Read response body with 120s timeout
+                response_data = await asyncio.wait_for(
+                    self.reader.readexactly(response_length), timeout=120.0
+                )
+                self._last_activity = time.time()
+                return response_data.decode("utf-8")
+
+            except (asyncio.TimeoutError, ConnectionError, OSError) as e:
+                print(f"Communication error: {e}")
+                await self._cleanup_connection()
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"Retrying connection ({retry_count}/{max_retries})...")
+                    await asyncio.sleep(self._reconnect_delay)
+                else:
+                    raise Exception(
+                        f"Communication failed after {max_retries} retries: {e}"
+                    )
+            except Exception as e:
+                await self._cleanup_connection()
+                raise Exception(f"Communication error: {e}")
 
     async def initialize_terminal(self, terminal_id: str = None):
         """Initialize terminal session"""

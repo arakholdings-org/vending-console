@@ -35,16 +35,22 @@ async def main():
         )
 
     try:
-        # Connect vending machine
-        await vm.connect()
+        print("Starting vending machine services...")
 
-        # Connect and start broker
+        # Connect vending machine (will auto-retry)
+        await vm.connect()
+        print("Vending machine connection initiated")
+
+        # Connect and start broker (will auto-retry)
         if broker.connect():
-            print("MQTT Broker connected successfully")
-            asyncio.create_task(broker.start())
+            print("MQTT Broker initial connection successful")
         else:
-            print("Failed to connect MQTT Broker")
-            return
+            print("MQTT Broker initial connection failed, will retry automatically")
+
+        asyncio.create_task(broker.start())
+
+        print("All services started. Connections will be automatically maintained.")
+        print("Press Ctrl+C to shutdown...")
 
         # Keep running until shutdown
         while True:
@@ -58,6 +64,7 @@ async def main():
     except Exception as e:
         print(f"Error: {e}")
     finally:
+        print("Cleaning up...")
         if vm.running:
             await vm.close()
         if broker.running:

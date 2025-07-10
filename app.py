@@ -2,12 +2,13 @@
 import asyncio
 import signal
 
-from services import VendingMachine, MQTTBroker
+from services import MQTTBroker, VendingMachine
+from utils import app_logger
 
 
 async def shutdown(signal, vm, broker):
     """Handle shutdown gracefully"""
-    print(f"\nReceived {signal.name}, shutting down...")
+    app_logger.info(f"Received {signal.name}, shutting down...")
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     [task.cancel() for task in tasks]
 
@@ -35,22 +36,26 @@ async def main():
         )
 
     try:
-        print("Starting vending machine services...")
+        app_logger.info("Starting vending machine services...")
 
         # Connect vending machine (will auto-retry)
         await vm.connect()
-        print("Vending machine connection initiated")
+        app_logger.info("Vending machine connection initiated")
 
         # Connect and start broker (will auto-retry)
         if broker.connect():
-            print("MQTT Broker initial connection successful")
+            app_logger.info("MQTT Broker initial connection successful")
         else:
-            print("MQTT Broker initial connection failed, will retry automatically")
+            app_logger.warning(
+                "MQTT Broker initial connection failed, will retry automatically"
+            )
 
         asyncio.create_task(broker.start())
 
-        print("All services started. Connections will be automatically maintained.")
-        print("Press Ctrl+C to shutdown...")
+        app_logger.info(
+            "All services started. Connections will be automatically maintained."
+        )
+        app_logger.info("Press Ctrl+C to shutdown...")
 
         # Keep running until shutdown
         while True:
@@ -60,11 +65,11 @@ async def main():
                 break
 
     except asyncio.CancelledError:
-        print("\nShutdown completed")
+        app_logger.info("Shutdown completed")
     except Exception as e:
-        print(f"Error: {e}")
+        app_logger.error(f"Error: {e}")
     finally:
-        print("Cleaning up...")
+        app_logger.info("Cleaning up...")
         if vm.running:
             await vm.close()
         if broker.running:
@@ -75,4 +80,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nShutdown by user")
+        app_logger.info("Shutdown by user")

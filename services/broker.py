@@ -1,10 +1,13 @@
-import json
 import asyncio
-from asyncio import Queue
-import paho.mqtt.client as mqtt
+import json
 import os
-from db import Prices, query
 import time
+from asyncio import Queue
+
+import paho.mqtt.client as mqtt
+
+from db import Prices, query
+from utils import broker_logger as logger
 
 
 class MQTTBroker:
@@ -41,7 +44,9 @@ class MQTTBroker:
         """Callback when connected to MQTT broker"""
         if rc == 0:
             self.connected = True
-            print(f"Connected to MQTT broker {self.broker} with result code {str(rc)}")
+            logger.info(
+                f"Connected to MQTT broker {self.broker} with result code {str(rc)}"
+            )
 
             # Subscribe to topics
             topics = [
@@ -55,15 +60,15 @@ class MQTTBroker:
                 self.client.subscribe(topic)
         else:
             self.connected = False
-            print(f"Failed to connect to MQTT broker, return code {rc}")
+            logger.error(f"Failed to connect to MQTT broker, return code {rc}")
 
     def _on_disconnect(self, client, userdata, rc):
         """Callback when disconnected from MQTT broker"""
         self.connected = False
         if rc != 0:
-            print(f"Unexpected disconnection from MQTT broker, code: {rc}")
+            logger.warning(f"Unexpected disconnection from MQTT broker, code: {rc}")
         else:
-            print("Disconnected from MQTT broker")
+            logger.info("Disconnected from MQTT broker")
 
     def _on_message(self, client, data, msg):
         """Queue incoming messages for async processing"""
@@ -75,14 +80,14 @@ class MQTTBroker:
                     {
                         "topic": msg.topic,
                         "payload": payload,
-                    }
+                    },
                 ),
                 self.loop,
             )
         except json.JSONDecodeError:
-            print(f"Invalid JSON payload received: {msg.payload}")
+            logger.error(f"Invalid JSON payload received: {msg.payload}")
         except Exception as e:
-            print(f"Error processing message: {e}")
+            logger.error(f"Error processing message: {e}")
 
     async def process_messages(self):
         """Process messages from queue"""
@@ -92,7 +97,7 @@ class MQTTBroker:
 
                 # Only process messages if connected
                 if not self.connected:
-                    print("Skipping message processing - MQTT not connected")
+                    logger.warning("Skipping message processing - MQTT not connected")
                     continue
 
                 topic = message["topic"]
@@ -113,7 +118,7 @@ class MQTTBroker:
                 # Timeout is normal, continue
                 continue
             except Exception as e:
-                print(f"Error processing message from queue: {e}")
+                logger.error(f"Error processing message from queue: {e}")
             finally:
                 try:
                     self.message_queue.task_done()
@@ -127,7 +132,9 @@ class MQTTBroker:
         while self.running:
             try:
                 if not self.connected:
-                    print(f"MQTT not connected, attempting reconnect in {delay}s...")
+                    logger.info(
+                        f"MQTT not connected, attempting reconnect in {delay}s..."
+                    )
                     await asyncio.sleep(delay)
 
                     if self.running:  # Check if still running after sleep
@@ -140,7 +147,7 @@ class MQTTBroker:
                     await asyncio.sleep(5)  # Check every 5 seconds when connected
 
             except Exception as e:
-                print(f"Connection monitor error: {e}")
+                logger.error(f"Connection monitor error: {e}")
                 await asyncio.sleep(delay)
 
     def _connect_internal(self):
@@ -149,18 +156,18 @@ class MQTTBroker:
             self.client.connect(self.broker, self.port, 60)
             return True
         except Exception as e:
-            print(f"Failed to connect to MQTT broker: {e}")
+            logger.error(f"Failed to connect to MQTT broker: {e}")
             return False
 
     async def _handle_price_update(self, payload):
         """Handle price update messages from MQTT with connection checks"""
         try:
             if not self.vending_machine:
-                print("No vending machine instance available")
+                logger.error("No vending machine instance available")
                 return
 
             if not self.connected:
-                print("Cannot handle price update - MQTT not connected")
+                logger.warning("Cannot handle price update - MQTT not connected")
                 return
 
             tray_number = payload.get("tray")
@@ -169,48 +176,83 @@ class MQTTBroker:
             set_all = payload.get("all", False)
 
             if price is None and not set_all:
-                print("Missing required fields in price update payload")
+                logger.error("Missing required fields in price update payload")
                 return
 
             results = []
             success = False
 
-
             if selection is not None:
-                # Update single selection (selection numbers start at 1)
                 if not (1 <= selection <= 100):
-                    print("Invalid selection: must be between 1 and 100")
+                    logger.error("Invalid selection: must be between 1 and 100")
                     return
-                # Update local DB
-                Prices.update({"price": price}, query.selection == selection)
+                # Use upsert instead of update
+                Prices.upsert(
+                    {
+                        "selection": selection,
+                        "price": price,
+                    },
+                    query.selection == selection,
+                )
+                data = selection.to_bytes(2, byteorder="big") + price.to_bytes(
+                    4, byteorder="big"
+                )
                 # Send command to vending machine (protocol: 0x12, selection(2), price(4))
-                data = selection.to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big")
                 vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
                 results.append({"selection": selection, "success": vm_result})
                 success = vm_result
 
             elif tray_number is not None:
-                # Use special selection number for tray: 1000 + tray_number
                 special_sel = 1000 + tray_number
-                # Update all selections in local DB for this tray
                 start_selection = tray_number * 10 + 1
                 for i in range(10):
                     sel = start_selection + i
-                    Prices.update({"price": price}, query.selection == sel)
+                    # Use upsert for each selection in tray
+                    Prices.upsert(
+                        {
+                            "selection": sel,
+                            "price": price,
+                        },
+                        query.selection == sel,
+                    )
                 # Send one command to vending machine for the tray
-                data = special_sel.to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big")
+                data = special_sel.to_bytes(2, byteorder="big") + price.to_bytes(
+                    4, byteorder="big"
+                )
                 vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
-                results.append({"tray": tray_number, "special_selection": special_sel, "success": vm_result})
+                results.append(
+                    {
+                        "tray": tray_number,
+                        "special_selection": special_sel,
+                        "success": vm_result,
+                    }
+                )
                 success = vm_result
 
             elif set_all:
-                # Use the vending machine's set_all_prices method to update all selections and send the special command
-                vm_result = await self.vending_machine.set_all_prices(price)
-                results.append({"all": True, "special_selection": 0, "success": vm_result})
+                for sel in range(1, 101):
+                    # Use upsert for all selections
+                    Prices.upsert(
+                        {
+                            "selection": sel,
+                            "price": price,
+                        },
+                        query.selection == sel,
+                    )
+                # Send command with special selection 0000
+                data = (0).to_bytes(2, byteorder="big") + price.to_bytes(
+                    4, byteorder="big"
+                )
+                vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
+                results.append(
+                    {"all": True, "special_selection": 0, "success": vm_result}
+                )
                 success = vm_result
 
             else:
-                print("No valid selection, tray, or all flag provided for price update")
+                logger.error(
+                    "No valid selection, tray, or all flag provided for price update"
+                )
                 return
 
             # Publish response only if connected
@@ -227,7 +269,7 @@ class MQTTBroker:
                 )
 
         except Exception as e:
-            print(f"Error handling price update: {e}")
+            logger.error(f"Error handling price update: {e}")
             # Publish error response only if connected
             if self.connected:
                 self.client.publish(
@@ -236,143 +278,240 @@ class MQTTBroker:
                 )
 
     async def _handle_inventory_update(self, payload):
-        """Handle inventory update messages"""
+        """Handle inventory update messages from MQTT"""
         try:
             if not self.vending_machine:
-                print("No vending machine instance available")
+                logger.error("No vending machine instance available")
                 return
 
-            selections = payload.get("selections", [])
+            if not self.connected:
+                logger.warning("Cannot handle inventory update - MQTT not connected")
+                return
+
+            tray_number = payload.get("tray")
             inventory = payload.get("inventory")
+            selection = payload.get("selection")
+            set_all = payload.get("all", False)
 
-            # Convert single selection to list
-            if isinstance(selections, int):
-                selections = [selections]
-
-            if not selections or inventory is None:
-                print("Missing required fields in inventory update payload")
+            if inventory is None and not set_all:
+                logger.error("Missing inventory value in payload")
                 return
 
             if not (0 <= inventory <= 255):
-                print("Invalid inventory value: must be between 0 and 255")
+                logger.error("Invalid inventory value: must be between 0 and 255")
                 return
 
             results = []
-            # Update each selection
-            for selection in selections:
-                # Update local database first
-                selection_data = Prices.get(query.selection == selection)
-                if selection_data:
-                    Prices.update(
+            success = False
+
+            if selection is not None:
+                if not (1 <= selection <= 100):
+                    logger.error("Invalid selection: must be between 1 and 100")
+                    return
+                # Use upsert instead of update
+                Prices.upsert(
+                    {
+                        "selection": selection,
+                        "inventory": inventory,
+                    },
+                    query.selection == selection,
+                )
+                # Send command to vending machine
+                data = selection.to_bytes(2, byteorder="big") + bytes([inventory])
+                vm_result = await self.vending_machine.queue_command(
+                    "SET_INVENTORY", data
+                )
+                results.append({"selection": selection, "success": vm_result})
+                success = vm_result
+
+            elif tray_number is not None:
+                # Use special selection number for tray: 1000 + tray_number
+                special_sel = 1000 + tray_number
+                # Update all selections in local DB for this tray
+                start_selection = tray_number * 10 + 1
+                for i in range(10):
+                    sel = start_selection + i
+                    Prices.upsert(
                         {
                             "inventory": inventory,
                         },
-                        query.selection == selection,
+                        query.selection == sel,
                     )
+                # Send one command to vending machine for the tray
+                data = special_sel.to_bytes(2, byteorder="big") + bytes([inventory])
+                vm_result = await self.vending_machine.queue_command(
+                    "SET_INVENTORY", data
+                )
+                results.append(
+                    {
+                        "tray": tray_number,
+                        "special_selection": special_sel,
+                        "success": vm_result,
+                    }
+                )
+                success = vm_result
 
-                    # Create inventory update command for VMC
-                    # Command 0x13: Set inventory
-                    inventory_data = selection.to_bytes(2, byteorder="big") + bytes(
-                        [inventory]
-                    )
-                    success = await self.vending_machine.queue_command(
-                        "SET_INVENTORY", inventory_data
-                    )
-
-                    results.append(
+            elif set_all:
+                # Use special selection 0000 for all selections
+                for sel in range(1, 101):
+                    Prices.upsert(
                         {
-                            "selection": selection,
-                            "success": success,
-                        }
+                            "inventory": inventory,
+                        },
+                        query.selection == sel,
                     )
-                else:
-                    results.append(
-                        {
-                            "selection": selection,
-                            "success": False,
-                            "error": "Selection not found in database",
-                        }
-                    )
+                # Send command with special selection 0000
+                data = (0).to_bytes(2, byteorder="big") + bytes([inventory])
+                vm_result = await self.vending_machine.queue_command(
+                    "SET_INVENTORY", data
+                )
+                results.append(
+                    {"all": True, "special_selection": 0, "success": vm_result}
+                )
+                success = vm_result
 
-            # Publish response
-            response = {
-                "success": any(r["success"] for r in results),
-                "results": results,
-            }
-            self.client.publish(
-                f"vmc/{self.machine_id}/inventory_update_status", json.dumps(response)
-            )
+            else:
+                logger.error(
+                    "No valid selection, tray, or all flag provided for inventory update"
+                )
+                return
+
+            # Publish response only if connected
+            if self.connected:
+                response = {
+                    "success": success,
+                    "tray": tray_number if tray_number is not None else None,
+                    "selection": selection if selection is not None else None,
+                    "inventory": inventory,
+                    "results": results,
+                }
+                self.client.publish(
+                    f"vmc/{self.machine_id}/inventory_update_status",
+                    json.dumps(response),
+                )
 
         except Exception as e:
-            print(f"Error handling inventory update: {e}")
-            self.client.publish(
-                f"vmc/{self.machine_id}/inventory_update_status",
-                json.dumps(
-                    {
-                        "success": False,
-                        "error": str(e),
-                    }
-                ),
-            )
+            logger.error(f"Error handling inventory update: {e}")
+            if self.connected:
+                self.client.publish(
+                    f"vmc/{self.machine_id}/inventory_update_status",
+                    json.dumps({"success": False, "error": str(e)}),
+                )
 
     async def _handle_capacity_update(self, payload):
-        """Handle capacity update messages for entire trays"""
+        """Handle capacity update messages from MQTT"""
         try:
             if not self.vending_machine:
-                print("No vending machine instance available")
+                logger.error("No vending machine instance available")
+                return
+
+            if not self.connected:
+                logger.warning("Cannot handle capacity update - MQTT not connected")
                 return
 
             tray_number = payload.get("tray")
             capacity = payload.get("capacity")
+            selection = payload.get("selection")
+            set_all = payload.get("all", False)
 
-            if tray_number is None or capacity is None:
-                print("Missing required fields in capacity update payload")
-                return
-
-
-            if not (tray_number >= 0):
-                print("Invalid tray number: must be >= 0")
+            if capacity is None and not set_all:
+                logger.error("Missing capacity value in payload")
                 return
 
             if not (0 <= capacity <= 255):
-                print("Invalid capacity value: must be between 0 and 255")
+                logger.error("Invalid capacity value: must be between 0 and 255")
                 return
 
-            # Special selection number for entire tray (1000 + tray_number)
-            tray_selection = 1000 + tray_number
+            results = []
+            success = False
 
-            # Create capacity update command for VMC
-            # Command 0x14: Set capacity for tray
-            capacity_data = tray_selection.to_bytes(2, byteorder="big") + bytes([capacity])
-            success = await self.vending_machine.queue_command("SET_CAPACITY", capacity_data)
+            if selection is not None:
+                # Update single selection
+                if not (1 <= selection <= 100):
+                    logger.error("Invalid selection: must be between 1 and 100")
+                    return
+                # Update local DB
+                Prices.update({"capacity": capacity}, query.selection == selection)
+                # Send command to vending machine
+                data = selection.to_bytes(2, byteorder="big") + bytes([capacity])
+                vm_result = await self.vending_machine.queue_command(
+                    "SET_CAPACITY", data
+                )
+                results.append({"selection": selection, "success": vm_result})
+                success = vm_result
 
-            # Always set capacity to 5 for all selections in tray
-            base_selection = tray_number * 10 + 1
-            for i in range(10):
-                selection = base_selection + i
-                Prices.update({"capacity": 5}, query.selection == selection)
+            elif tray_number is not None:
+                # Use special selection number for tray: 1000 + tray_number
+                special_sel = 1000 + tray_number
+                # Update all selections in local DB for this tray
+                start_selection = tray_number * 10 + 1
+                for i in range(10):
+                    sel = start_selection + i
+                    Prices.update({"capacity": capacity}, query.selection == sel)
+                # Send one command to vending machine for the tray
+                data = special_sel.to_bytes(2, byteorder="big") + bytes([capacity])
+                vm_result = await self.vending_machine.queue_command(
+                    "SET_CAPACITY", data
+                )
+                results.append(
+                    {
+                        "tray": tray_number,
+                        "special_selection": special_sel,
+                        "success": vm_result,
+                    }
+                )
+                success = vm_result
 
-            # Publish response
-            response = {
-                "success": success,
-                "tray": tray_number,
-                "capacity": capacity,
-            }
-            self.client.publish(
-                f"vmc/{self.machine_id}/capacity_update_status", json.dumps(response)
-            )
+            elif set_all:
+                # Use special selection 0000 for all selections
+                for sel in range(1, 101):
+                    Prices.update({"capacity": capacity}, query.selection == sel)
+                # Send command with special selection 0000
+                data = (0).to_bytes(2, byteorder="big") + bytes([capacity])
+                vm_result = await self.vending_machine.queue_command(
+                    "SET_CAPACITY", data
+                )
+                results.append(
+                    {
+                        "all": True,
+                        "special_selection": 0,
+                        "success": vm_result,
+                    }
+                )
+                success = vm_result
+
+            else:
+                logger.error(
+                    "No valid selection, tray, or all flag provided for capacity update"
+                )
+                return
+
+            # Publish response only if connected
+            if self.connected:
+                response = {
+                    "success": success,
+                    "tray": tray_number if tray_number is not None else None,
+                    "selection": selection if selection is not None else None,
+                    "capacity": capacity,
+                    "results": results,
+                }
+                self.client.publish(
+                    f"vmc/{self.machine_id}/capacity_update_status",
+                    json.dumps(response),
+                )
 
         except Exception as e:
-            print(f"Error handling capacity update: {e}")
-            self.client.publish(
-                f"vmc/{self.machine_id}/capacity_update_status",
-                json.dumps(
-                    {
-                        "success": False,
-                        "error": str(e),
-                    }
-                ),
-            )
+            logger.error(f"Error handling capacity update: {e}")
+            if self.connected:
+                self.client.publish(
+                    f"vmc/{self.machine_id}/capacity_update_status",
+                    json.dumps(
+                        {
+                            "success": False,
+                            "error": str(e),
+                        }
+                    ),
+                )
 
     async def _handle_get_prices(self):
         """Handle get prices request"""
@@ -389,7 +528,7 @@ class MQTTBroker:
                         "price": price.price,
                         "inventory": price.inventory,
                         "capacity": price.capacity,
-                    }
+                    },
                 )
 
             # Publish response
@@ -400,7 +539,7 @@ class MQTTBroker:
             self.client.publish(f"vmc/{self.machine_id}/prices", json.dumps(response))
 
         except Exception as e:
-            print(f"Error handling get prices request: {e}")
+            logger.error(f"Error handling get prices request: {e}")
             self.client.publish(
                 f"vmc/{self.machine_id}/prices",
                 json.dumps(
@@ -431,10 +570,15 @@ class MQTTBroker:
             self.client.publish(f"vmc/{self.machine_id}/pong", json.dumps(response))
 
         except Exception as e:
-            print(f"Error handling ping: {e}")
+            logger.error(f"Error handling ping: {e}")
             self.client.publish(
                 f"vmc/{self.machine_id}/pong",
-                json.dumps({"status": "error", "error": str(e)}),
+                json.dumps(
+                    {
+                        "status": "error",
+                        "error": str(e),
+                    }
+                ),
             )
 
     def connect(self):
@@ -470,3 +614,4 @@ class MQTTBroker:
         # Stop MQTT client
         self.client.loop_stop()
         self.client.disconnect()
+        logger.info("MQTT broker stopped")

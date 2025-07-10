@@ -4,6 +4,7 @@ from asyncio import Queue
 import paho.mqtt.client as mqtt
 import os
 from db import Prices, query
+import time
 
 
 class MQTTBroker:
@@ -30,7 +31,7 @@ class MQTTBroker:
         self.connected = False
 
         self.loop = asyncio.get_event_loop()
-        
+
         # Connection monitoring
         self._connection_monitor_task = None
         self._reconnect_delay = 5  # seconds
@@ -48,6 +49,7 @@ class MQTTBroker:
                 f"vmc/{self.machine_id}/get_prices",
                 f"vmc/{self.machine_id}/set_inventory",
                 f"vmc/{self.machine_id}/set_capacity",
+                f"vmc/{self.machine_id}/ping",
             ]
             for topic in topics:
                 self.client.subscribe(topic)
@@ -87,12 +89,12 @@ class MQTTBroker:
         while self.running:
             try:
                 message = await asyncio.wait_for(self.message_queue.get(), timeout=1.0)
-                
+
                 # Only process messages if connected
                 if not self.connected:
                     print("Skipping message processing - MQTT not connected")
                     continue
-                    
+
                 topic = message["topic"]
                 payload = message["payload"]
 
@@ -104,6 +106,8 @@ class MQTTBroker:
                     await self._handle_inventory_update(payload)
                 elif topic == f"vmc/{self.machine_id}/set_capacity":
                     await self._handle_capacity_update(payload)
+                elif topic == f"vmc/{self.machine_id}/ping":
+                    await self._handle_ping(payload)
 
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
@@ -119,13 +123,13 @@ class MQTTBroker:
     async def _monitor_connection(self):
         """Monitor MQTT connection and reconnect if needed"""
         delay = self._reconnect_delay
-        
+
         while self.running:
             try:
                 if not self.connected:
                     print(f"MQTT not connected, attempting reconnect in {delay}s...")
                     await asyncio.sleep(delay)
-                    
+
                     if self.running:  # Check if still running after sleep
                         if self._connect_internal():
                             delay = self._reconnect_delay  # Reset delay on success
@@ -134,7 +138,7 @@ class MQTTBroker:
                 else:
                     delay = self._reconnect_delay  # Reset delay when connected
                     await asyncio.sleep(5)  # Check every 5 seconds when connected
-                    
+
             except Exception as e:
                 print(f"Connection monitor error: {e}")
                 await asyncio.sleep(delay)
@@ -400,6 +404,32 @@ class MQTTBroker:
                 ),
             )
 
+    async def _handle_ping(self, payload):
+        """Handle ping messages and respond with pong"""
+        try:
+            # Create response with timestamp and any additional info from payload
+            response = {
+                "status": "pong",
+                "timestamp": int(time.time()),
+                "machine_id": self.machine_id,
+            }
+
+            # Add any fields from the original payload to the response
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if key not in response:
+                        response[key] = value
+
+            # Publish the response
+            self.client.publish(f"vmc/{self.machine_id}/pong", json.dumps(response))
+
+        except Exception as e:
+            print(f"Error handling ping: {e}")
+            self.client.publish(
+                f"vmc/{self.machine_id}/pong",
+                json.dumps({"status": "error", "error": str(e)}),
+            )
+
     def connect(self):
         """Connect to MQTT broker"""
         return self._connect_internal()
@@ -407,13 +437,13 @@ class MQTTBroker:
     async def start(self):
         """Start broker operations"""
         self.running = True
-        
+
         # Start connection monitoring
         self._connection_monitor_task = asyncio.create_task(self._monitor_connection())
-        
+
         # Start MQTT client
         self.client.loop_start()
-        
+
         # Start processing messages
         await self.process_messages()
 
@@ -421,7 +451,7 @@ class MQTTBroker:
         """Stop broker operations"""
         self.running = False
         self.connected = False
-        
+
         # Cancel connection monitoring
         if self._connection_monitor_task:
             self._connection_monitor_task.cancel()
@@ -429,7 +459,7 @@ class MQTTBroker:
                 await self._connection_monitor_task
             except asyncio.CancelledError:
                 pass
-        
+
         # Stop MQTT client
         self.client.loop_stop()
         self.client.disconnect()

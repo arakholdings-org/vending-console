@@ -166,45 +166,61 @@ class MQTTBroker:
             tray_number = payload.get("tray")
             price = payload.get("price")
             selection = payload.get("selection")
+            set_all = payload.get("all", False)
 
-            if price is None or (tray_number is None and selection is None):
+            if price is None and not set_all:
                 print("Missing required fields in price update payload")
                 return
 
+            results = []
             success = False
 
+
             if selection is not None:
-                # Update single selection
-                if not (0 <= selection <= 99):
-                    print("Invalid selection: must be between 0 and 99")
+                # Update single selection (selection numbers start at 1)
+                if not (1 <= selection <= 100):
+                    print("Invalid selection: must be between 1 and 100")
                     return
+                # Update local DB
+                Prices.update({"price": price}, query.selection == selection)
+                # Send command to vending machine (protocol: 0x12, selection(2), price(4))
+                data = selection.to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big")
+                vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
+                results.append({"selection": selection, "success": vm_result})
+                success = vm_result
 
-                # Create data packet for single selection
-                data = selection.to_bytes(2, byteorder="big") + price.to_bytes(
-                    4, byteorder="big"
-                )
-                # Send command to vending machine
-                success = await self.vending_machine.queue_command("SET_PRICE", data)
+            elif tray_number is not None:
+                # Use special selection number for tray: 1000 + tray_number
+                special_sel = 1000 + tray_number
+                # Update all selections in local DB for this tray
+                start_selection = tray_number * 10 + 1
+                for i in range(10):
+                    sel = start_selection + i
+                    Prices.update({"price": price}, query.selection == sel)
+                # Send one command to vending machine for the tray
+                data = special_sel.to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big")
+                vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
+                results.append({"tray": tray_number, "special_selection": special_sel, "success": vm_result})
+                success = vm_result
 
-                if success:
-                    # Update database for single selection
-                    Prices.update(
-                        {"price": price},
-                        query.selection == selection,
-                    )
+            elif set_all:
+                # Use the vending machine's set_all_prices method to update all selections and send the special command
+                vm_result = await self.vending_machine.set_all_prices(price)
+                results.append({"all": True, "special_selection": 0, "success": vm_result})
+                success = vm_result
+
             else:
-                # Update entire tray
-                success = await self.vending_machine.set_product_price(
-                    tray_number, price
-                )
+                print("No valid selection, tray, or all flag provided for price update")
+                return
 
             # Publish response only if connected
             if self.connected:
                 response = {
                     "success": success,
-                    "tray": tray_number if selection is None else None,
-                    "selection": selection,
+                    "tray": tray_number if tray_number is not None else None,
+                    "selection": selection if selection is not None else None,
                     "price": price,
+                    "results": results,
                 }
                 self.client.publish(
                     f"vmc/{self.machine_id}/price_update_status", json.dumps(response)
@@ -313,8 +329,9 @@ class MQTTBroker:
                 print("Missing required fields in capacity update payload")
                 return
 
-            if not (0 <= tray_number <= 9):
-                print("Invalid tray number: must be between 0 and 9")
+
+            if not (tray_number >= 0):
+                print("Invalid tray number: must be >= 0")
                 return
 
             if not (0 <= capacity <= 255):
@@ -325,25 +342,15 @@ class MQTTBroker:
             tray_selection = 1000 + tray_number
 
             # Create capacity update command for VMC
-            # Command 0x14: Set capacity
-            capacity_data = tray_selection.to_bytes(2, byteorder="big") + bytes(
-                [capacity]
-            )
-            success = await self.vending_machine.queue_command(
-                "SET_CAPACITY", capacity_data
-            )
+            # Command 0x14: Set capacity for tray
+            capacity_data = tray_selection.to_bytes(2, byteorder="big") + bytes([capacity])
+            success = await self.vending_machine.queue_command("SET_CAPACITY", capacity_data)
 
-            if success:
-                # Update local database for all selections in tray
-                base_selection = tray_number * 10
-                for i in range(10):  # 10 selections per tray
-                    selection = base_selection + i
-                    Prices.update(
-                        {
-                            "capacity": capacity,
-                        },
-                        query.selection == selection,
-                    )
+            # Always set capacity to 5 for all selections in tray
+            base_selection = tray_number * 10 + 1
+            for i in range(10):
+                selection = base_selection + i
+                Prices.update({"capacity": 5}, query.selection == selection)
 
             # Publish response
             response = {

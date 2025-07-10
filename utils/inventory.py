@@ -13,21 +13,20 @@ def create_tray_data(tray_number: int, price: int, inventory: int = 5) -> List[D
     Returns:
         List of dictionaries containing selection data for the tray
     """
-    if not (0 <= tray_number <= 9):
-        raise ValueError("Tray number must be between 0 and 9")
+    if tray_number < 0:
+        raise ValueError("Tray number must be >= 0")
 
     selections = []
-    start_selection = tray_number * 10 + 1  # Start at 1, 11, 21, ...
+    start_selection = tray_number * 10 + 1  # 1, 11, 21, ...
 
-    # Create entries for each selection in the tray
-    for i in range(10):  # 10 selections per tray
+    for i in range(10):
         selection_number = start_selection + i
         selection_data = {
             "selection": selection_number,
             "tray": tray_number,
             "price": price,
             "inventory": inventory,
-            "capacity": 5,  # Fixed capacity per selection
+            "capacity": 5,  # Always 5
         }
         selections.append(selection_data)
 

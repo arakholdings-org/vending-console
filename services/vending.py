@@ -12,6 +12,26 @@ from db import Prices, query
 
 
 class VendingMachine:
+    async def set_all_prices(self, price: int):
+        """Set price for all selections (1-100) using special selection number 0x0000"""
+        if price is None or not (0 <= price <= 9999):
+            self.log("Invalid price: must be between 0 and 9999 cents")
+            return False
+
+        # Update all selections in local DB (1-100)
+        for selection in range(1, 101):
+            Prices.upsert({
+                "selection": selection,
+                "tray": (selection - 1) // 10,
+                "price": price,
+                "inventory": 5,
+                "capacity": 5
+            }, query.selection == selection)
+
+        # Use special selection number 0x0000 for all
+        data = (0).to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big")
+        return await self.queue_command("SET_PRICE", data)
+    
     POLL_INTERVAL = 0.2
     RESPONSE_TIMEOUT = 0.1
 
@@ -613,49 +633,23 @@ class VendingMachine:
         return True
 
     async def set_product_price(self, tray_number: int, price: int):
-        """Set price for an entire tray
-
-        Args:
-            tray_number: Tray number (0-9)
-            price: Price in cents (0-9999)
-
-        Returns:
-            bool: True if successful, False if validation fails
-        """
+        """Set price for an entire tray using special selection number (1000+tray_number)"""
         if price is None or not (0 <= price <= 9999):
             self.log("Invalid price: must be between 0 and 9999 cents")
             return False
-
-        if not (0 <= tray_number <= 9):
-            self.log("Invalid tray number: must be between 0 and 9")
+        if tray_number < 0:
+            self.log("Invalid tray number: must be >= 0")
             return False
 
-        # First selection in tray: tray_number * 10 + 1
-        selection = tray_number * 10 + 1
+        # Update all selections in local DB for this tray
+        selections = create_tray_data(tray_number, price)
+        for selection_data in selections:
+            Prices.upsert(selection_data, query.selection == selection_data["selection"])
 
-        # Create data packet: selection number (2 bytes) + price (4 bytes)
-        data = selection.to_bytes(2, byteorder="big") + price.to_bytes(
-            4, byteorder="big"
-        )
-
-        # First set price in the vending machine
-        if not await self.queue_command("SET_PRICE", data):
-            return False
-
-        try:
-            # Generate selection data for the tray
-            selections = create_tray_data(tray_number, price)
-
-            # Update prices in database
-            for selection_data in selections:
-                Prices.upsert(
-                    selection_data, query.selection == selection_data["selection"]
-                )
-
-            return True
-        except Exception as e:
-            self.log(f"Database update failed: {e}")
-            return False
+        # Use special selection number for tray
+        special_sel = 1000 + tray_number
+        data = special_sel.to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big")
+        return await self.queue_command("SET_PRICE", data)
 
     async def cancel_selection(self):
         """Cancel current selection with proper state reset"""

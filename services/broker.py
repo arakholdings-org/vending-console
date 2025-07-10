@@ -179,6 +179,7 @@ class MQTTBroker:
                 data = selection.to_bytes(2, byteorder="big") + price.to_bytes(
                     4, byteorder="big"
                 )
+                # Send command to vending machine
                 success = await self.vending_machine.queue_command("SET_PRICE", data)
 
                 if success:

@@ -9,7 +9,6 @@ from db import Prices, query
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
-from utils.inventory import create_tray_data
 
 
 class VendingMachine:
@@ -626,29 +625,6 @@ class VendingMachine:
         # Send command immediately for dispensing
         await self._send_command(VMC_COMMANDS["DIRECT_DRIVE"]["code"], data)
         return True
-
-    async def set_product_price(self, tray_number: int, price: int):
-        """Set price for an entire tray using special selection number (1000+tray_number)"""
-        if price is None or not (0 <= price <= 9999):
-            self.log("Invalid price: must be between 0 and 9999 cents")
-            return False
-        if tray_number < 0:
-            self.log("Invalid tray number: must be >= 0")
-            return False
-
-        # Update all selections in local DB for this tray
-        selections = create_tray_data(tray_number, price)
-        for selection_data in selections:
-            Prices.upsert(
-                selection_data, query.selection == selection_data["selection"]
-            )
-
-        # Use special selection number for tray
-        special_sel = 1000 + tray_number
-        data = special_sel.to_bytes(2, byteorder="big") + price.to_bytes(
-            4, byteorder="big"
-        )
-        return await self.queue_command("SET_PRICE", data)
 
     async def cancel_selection(self):
         """Cancel current selection with proper state reset"""

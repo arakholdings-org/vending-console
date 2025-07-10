@@ -230,8 +230,8 @@ class MQTTBroker:
                 success = vm_result
 
             elif set_all:
+                # Update local database first
                 for sel in range(1, 101):
-                    # Use upsert for all selections
                     Prices.upsert(
                         {
                             "selection": sel,
@@ -239,16 +239,15 @@ class MQTTBroker:
                         },
                         query.selection == sel,
                     )
-                # Send command with special selection 0000
-                data = (0).to_bytes(2, byteorder="big") + price.to_bytes(
-                    4, byteorder="big"
-                )
-                vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
-                results.append(
-                    {"all": True, "special_selection": 0, "success": vm_result}
-                )
-                success = vm_result
 
+                # Format command for all selections (0000)
+                # Protocol: Command 0x12, special selection (2 bytes) + price (4 bytes)
+                data = (0).to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big", signed=False)
+                vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
+
+                if not vm_result:
+                    logger.error("Failed to send SET_PRICE command to VMC")
+                    # Optionally revert database changes here
             else:
                 logger.error(
                     "No valid selection, tray, or all flag provided for price update"

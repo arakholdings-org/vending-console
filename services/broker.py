@@ -230,6 +230,7 @@ class MQTTBroker:
                 success = vm_result
 
             elif set_all:
+                special_sel = 0000
                 # Update local database first
                 for sel in range(1, 101):
                     Prices.upsert(
@@ -242,7 +243,9 @@ class MQTTBroker:
 
                 # Format command for all selections (0000)
                 # Protocol: Command 0x12, special selection (2 bytes) + price (4 bytes)
-                data = (0).to_bytes(2, byteorder="big") + price.to_bytes(4, byteorder="big", signed=False)
+                data = (special_sel).to_bytes(2, byteorder="big") + price.to_bytes(
+                    4, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command("SET_PRICE", data)
 
                 if not vm_result:
@@ -316,7 +319,9 @@ class MQTTBroker:
                     query.selection == selection,
                 )
                 # Send command to vending machine
-                data = selection.to_bytes(2, byteorder="big") + bytes([inventory])
+                data = selection.to_bytes(2, byteorder="big") + inventory.to_bytes(
+                    1, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command(
                     "SET_INVENTORY", data
                 )
@@ -337,7 +342,9 @@ class MQTTBroker:
                         query.selection == sel,
                     )
                 # Send one command to vending machine for the tray
-                data = special_sel.to_bytes(2, byteorder="big") + bytes([inventory])
+                data = special_sel.to_bytes(2, byteorder="big") + inventory.to_bytes(
+                    1, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command(
                     "SET_INVENTORY", data
                 )
@@ -360,7 +367,9 @@ class MQTTBroker:
                         query.selection == sel,
                     )
                 # Send command with special selection 0000
-                data = (0).to_bytes(2, byteorder="big") + bytes([inventory])
+                data = (0).to_bytes(2, byteorder="big") + inventory.to_bytes(
+                    1, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command(
                     "SET_INVENTORY", data
                 )
@@ -432,7 +441,9 @@ class MQTTBroker:
                 # Update local DB
                 Prices.update({"capacity": capacity}, query.selection == selection)
                 # Send command to vending machine
-                data = selection.to_bytes(2, byteorder="big") + bytes([capacity])
+                data = selection.to_bytes(2, byteorder="big") + capacity.to_bytes(
+                    1, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command(
                     "SET_CAPACITY", data
                 )
@@ -448,7 +459,9 @@ class MQTTBroker:
                     sel = start_selection + i
                     Prices.update({"capacity": capacity}, query.selection == sel)
                 # Send one command to vending machine for the tray
-                data = special_sel.to_bytes(2, byteorder="big") + bytes([capacity])
+                data = special_sel.to_bytes(2, byteorder="big") + capacity.to_bytes(
+                    1, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command(
                     "SET_CAPACITY", data
                 )
@@ -466,7 +479,9 @@ class MQTTBroker:
                 for sel in range(1, 101):
                     Prices.update({"capacity": capacity}, query.selection == sel)
                 # Send command with special selection 0000
-                data = (0).to_bytes(2, byteorder="big") + bytes([capacity])
+                data = (0).to_bytes(2, byteorder="big") + capacity.to_bytes(
+                    1, byteorder="big", signed=False
+                )
                 vm_result = await self.vending_machine.queue_command(
                     "SET_CAPACITY", data
                 )

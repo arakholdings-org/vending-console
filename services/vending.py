@@ -344,7 +344,7 @@ class VendingMachine:
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _handle_selection_cancel(self, payload):
-        """Handle selection cancel"""
+        """Handle selection cancel with inventory checking"""
         if len(payload) < 2:
             logger.warning("Invalid SELECT_CANCEL packet")
             return
@@ -352,62 +352,93 @@ class VendingMachine:
         packet_number = payload[0]
         selection = int.from_bytes(payload[1:3], "big")
 
-        # Log more detailed information about the cancel event
+        # Log selection event
         logger.info(
-            f"Selection cancel event received: packet={packet_number}, selection={selection}"
+            f"Selection event received: packet={packet_number}, selection={selection}"
         )
 
-        # Prevent duplicate processing of the same cancel packet
+        # Prevent duplicate processing
         if (
             hasattr(self, "_last_cancel_packet")
             and self._last_cancel_packet == packet_number
         ):
-            logger.info("Ignoring duplicate cancel packet")
+            logger.info("Ignoring duplicate selection packet")
             await self._send_command(VMC_COMMANDS["ACK"]["code"])
             return
 
         self._last_cancel_packet = packet_number
 
-        # Reset after processing a cancel to prevent queueing issues
-        self.command_queue = (
-            asyncio.Queue()
-        )  # Create a new queue to clear pending commands
+        # Clear command queue
+        self.command_queue = asyncio.Queue()
 
         if selection == 0:
-            # Cancel any running transaction
-            if (
-                self._current_transaction_task
-                and not self._current_transaction_task.done()
-            ):
-                logger.info("Cancelling active transaction")
-                self._current_transaction_task.cancel()
-                try:
-                    await self._current_transaction_task
-                except asyncio.CancelledError:
-                    logger.info("Transaction cancelled successfully")
-                except Exception as e:
-                    logger.error(f"Error cancelling transaction: {e}")
-                finally:
-                    self._current_transaction_task = None
-
-            self.current_selection = None
-            logger.info("Selection cancelled")
+            # Handle cancellation
+            await self._handle_cancel_request()
         else:
-            # Only process if no transaction is running
-            if (
-                not self._current_transaction_task
-                or self._current_transaction_task.done()
-            ):
-                self.current_selection = selection
-                logger.info(f"Selected product #{selection}")
-                await self._process_payment(selection)
-            else:
-                logger.info("Ignoring selection, transaction in progress")
+            # Check inventory before proceeding
+            try:
+                selection_data = Prices.get(query.selection == selection)
+
+                if not selection_data:
+                    logger.error(
+                        f"✗ Error: Selection {selection} not found in database"
+                    )
+                    await self.cancel_selection()
+                    return
+
+                current_inventory = selection_data.get("inventory", 0)
+
+                if current_inventory <= 0:
+                    logger.error(f"✗ Error: Selection {selection} out of stock")
+                    # Send status code 0x02 (Out of stock) according to VMC protocol
+                    status_data = bytes([packet_number, 0x02]) + selection.to_bytes(
+                        2, byteorder="big"
+                    )
+                    await self._send_command(
+                        VMC_COMMANDS["SELECTION_INFO"]["code"], status_data
+                    )
+                    await self.cancel_selection()
+                    return
+
+                # Only process if no transaction is running
+                if (
+                    not self._current_transaction_task
+                    or self._current_transaction_task.done()
+                ):
+                    self.current_selection = selection
+                    logger.info(
+                        f"Selected product #{selection} (inventory: {current_inventory})"
+                    )
+                    await self._process_payment(selection)
+                else:
+                    logger.info("Ignoring selection, transaction in progress")
+
+            except Exception as e:
+                logger.error(f"✗ Error checking inventory: {str(e)}")
+                await self.cancel_selection()
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
+    async def _handle_cancel_request(self):
+        """Handle cancel request"""
+        # Cancel any running transaction
+        if self._current_transaction_task and not self._current_transaction_task.done():
+            logger.info("Cancelling active transaction")
+            self._current_transaction_task.cancel()
+            try:
+                await self._current_transaction_task
+            except asyncio.CancelledError:
+                logger.info("Transaction cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error cancelling transaction: {e}")
+            finally:
+                self._current_transaction_task = None
+
+        self.current_selection = None
+        logger.info("Selection cancelled")
+
     async def _process_payment(self, selection):
-        """Enhanced payment processing with connection checks"""
+        """Simplified payment processing with proper cancel/reset after transaction"""
         if self._current_transaction_task:
             logger.warning("Payment attempted while transaction in progress")
             if self.serial_connected:
@@ -442,55 +473,42 @@ class VendingMachine:
                 logger.info(f"Initiating payment ${amount/100:.2f}")
                 logger.info(f"Transaction ID: {transaction_id}")
 
-                def payment_callback(task):
+                async def handle_payment_result(task):
                     try:
                         response = task.result()
-                        if response.get(
+                        approved = response.get(
                             "success", False
-                        ) and 'ActionCode="APPROVE"' in response.get(
-                            "raw_response", ""
-                        ):
+                        ) and 'ActionCode="APPROVE"' in response.get("raw_response", "")
+                        if approved:
                             logger.info("✓ Payment approved")
-
                             selection = self.current_selection
                             selection_data = Prices.get(query.selection == selection)
-
                             if selection_data and self.serial_connected:
                                 # dispense product
-                                asyncio.create_task(
-                                    self.queue_command(
-                                        "DIRECT_DRIVE",
-                                        bytes([1, 1])
-                                        + selection.to_bytes(2, byteorder="big"),
-                                    )
+                                await self.queue_command(
+                                    "DIRECT_DRIVE",
+                                    bytes([1, 1])
+                                    + selection.to_bytes(2, byteorder="big"),
                                 )
-
                                 # Update inventory in database after dispensing command
                                 current_inventory = selection_data.get("inventory", 0)
                                 new_inventory = max(0, current_inventory - 1)
-
-                                # Update local database
                                 Prices.update(
                                     {"inventory": new_inventory},
                                     query.selection == selection,
                                 )
-
-                                # Create and queue inventory update command for VMC
+                                # Queue inventory update command for VMC
                                 if self.serial_connected:
                                     inventory_data = selection.to_bytes(
                                         2, byteorder="big"
                                     ) + bytes([new_inventory])
-                                    asyncio.create_task(
-                                        self.queue_command(
-                                            "SET_INVENTORY", inventory_data
-                                        )
+                                    await self.queue_command(
+                                        "SET_INVENTORY", inventory_data
                                     )
                             else:
-                                self.log(
-                                    f"✗ Error: Could not dispense - serial disconnected or selection not found"
+                                logger.error(
+                                    "✗ Error: Could not dispense - serial disconnected or selection not found"
                                 )
-                                asyncio.create_task(self.cancel_selection())
-
                         else:
                             error_msg = (
                                 self._extract_error_message(
@@ -498,24 +516,25 @@ class VendingMachine:
                                 )
                                 or "Transaction declined"
                             )
-                            self.log(f"✗ Payment failed: {error_msg}")
-                            asyncio.create_task(self.cancel_selection())
+                            logger.error(f"✗ Payment failed: {error_msg}")
                     except Exception as e:
-                        self.log(f"✗ Payment error: {str(e)}")
-                        asyncio.create_task(self.cancel_selection())
+                        logger.error(f"✗ Payment error: {str(e)}")
                     finally:
                         self.current_selection = None
                         self._current_transaction_task = None
+                        await self.cancel_selection()
 
                 self._current_transaction_task = asyncio.create_task(
                     self.esocket_client.send_purchase_transaction(
                         transaction_id=transaction_id, amount=amount
                     )
                 )
-                self._current_transaction_task.add_done_callback(payment_callback)
+                self._current_transaction_task.add_done_callback(
+                    lambda t: asyncio.create_task(handle_payment_result(t))
+                )
 
         except Exception as e:
-            self.log(f"✗ System error: {str(e)}")
+            logger.error(f"✗ System error: {str(e)}")
             self.current_selection = None
             self._current_transaction_task = None
             await self.cancel_selection()
@@ -539,12 +558,12 @@ class VendingMachine:
         return None
 
     async def _handle_dispensing_status(self, payload):
-        """Enhanced dispensing status handler with reversal support"""
+        """Enhanced dispensing status handler with automatic refund for drop sensor failures"""
         if len(payload) < 2:
             return
 
         status_code = payload[1]
-        # Use the selection from the payload if available, else fallback to self.current_selection
+        # Get selection from payload or current selection
         selection = self.current_selection
         if len(payload) >= 3:
             selection_from_payload = int.from_bytes(payload[2:4], "big")
@@ -553,44 +572,58 @@ class VendingMachine:
 
         # Success codes
         if status_code in (0x00, 0x02):
-            self.log(f"Product #{selection} dispensed successfully")
+            self.log(f"✓ Product #{selection} dispensed successfully")
             self.current_selection = None
 
-        # Error codes indicating jam/stuck product
+        # Error codes indicating drop sensor failure or jam
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
+            error_descriptions = {
+                0x03: "product jammed",
+                0x04: "motor didn't stop normally",
+                0x06: "motor doesn't exist",
+                0x07: "elevator error",
+                0xFF: "purchase terminated",
+            }
+            error_desc = error_descriptions.get(status_code, "unknown error")
             self.log(
-                f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})"
+                f"✗ Product #{selection} - Error: {error_desc} (code: {status_code:02X})"
             )
 
             # Create reversal transaction
             try:
-                transaction_id = str(int(time.time()) % 1000000).zfill(6)
+                if self._current_transaction_id:
+                    transaction_id = str(int(time.time()) % 1000000).zfill(6)
 
-                # Construct reversal XML message
-                reversal_message = {
-                    "TerminalId": self.esocket_client.terminal_id,
-                    "TransactionId": transaction_id,
-                    "Type": "REVERSAL",
-                    "OriginalTransactionId": self._current_transaction_id,
-                    "ReasonCode": f"Product jam error {status_code:02X}",
-                }
+                    # Construct reversal XML message according to payment.md spec
+                    reversal_message = {
+                        "TerminalId": self.esocket_client.terminal_id,
+                        "TransactionId": transaction_id,
+                        "Type": "REVERSAL",
+                        "OriginalTransactionId": self._current_transaction_id,
+                        "ReasonCode": f"Product dispensing failed - {error_desc}",
+                    }
 
-                self.log("Initiating payment reversal due to product jam...")
-
-                # Send reversal to payment terminal
-                response = await self.esocket_client.send_reversal_transaction(
-                    **reversal_message
-                )
-
-                if response.get(
-                    "success", False
-                ) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                    self.log("✓ Payment reversed successfully")
-                else:
-                    error_msg = self._extract_error_message(
-                        response.get("raw_response", "")
+                    self.log(
+                        "⟳ Initiating payment reversal due to dispensing failure..."
                     )
-                    self.log(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
+
+                    # Send reversal to payment terminal
+                    response = await self.esocket_client.send_reversal_transaction(
+                        **reversal_message
+                    )
+
+                    if response.get(
+                        "success", False
+                    ) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
+                        self.log("✓ Payment reversed successfully")
+                    else:
+                        error_msg = self._extract_error_message(
+                            response.get("raw_response", "")
+                        )
+                        self.log(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
+
+                else:
+                    self.log("✗ Cannot process refund - no transaction ID found")
 
             except Exception as e:
                 self.log(f"✗ Reversal error: {str(e)}")

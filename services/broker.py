@@ -538,10 +538,10 @@ class MQTTBroker:
             for price in all_prices:
                 prices_list.append(
                     {
-                        "selection": price.selection,
-                        "price": price.price,
-                        "inventory": price.inventory,
-                        "capacity": price.capacity,
+                        "selection": price.get("selection"),
+                        "price": price.get("price"),
+                        "inventory": price.get("inventory"),
+                        "capacity": price.get("capacity"),
                     },
                 )
 

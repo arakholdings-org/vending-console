@@ -151,8 +151,7 @@ chmod +x "$PROJECT_DIR/scripts/uninstall.sh"
 
 # Copy/move necessary files to root directory
 cp "$SCRIPT_DIR/db.json" "$PROJECT_DIR/db.json" || { echo "Error: Failed to copy db.json"; exit 1; }
-cp "$SCRIPT_DIR/start_vending.sh" "$PROJECT_DIR/start_vending.sh" || { echo "Error: Failed to copy start_vending.sh"; exit 1; }
-chmod +x "$PROJECT_DIR/start_vending.sh"
+
 
 # Update app.py to use ttyVending instead of ttyUSB0
 echo "Updating configuration to use ttyVending..."

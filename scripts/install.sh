@@ -146,6 +146,9 @@ EOF
 chmod +x "$PROJECT_DIR/scripts/install.sh"
 chmod +x "$PROJECT_DIR/scripts/uninstall.sh"
 
+# Copy initial database file
+cp "$(dirname "$0")/db.json" "$PROJECT_DIR/db.json"
+
 # Update app.py to use ttyVending instead of ttyUSB0
 echo "Updating configuration to use ttyVending..."
 if [ -f "$PROJECT_DIR/app.py" ]; then
@@ -160,6 +163,3 @@ echo "Log files will be stored in: $LOG_DIR"
 echo "To test the script without rebooting, run:"
 echo "  $STARTUP_SCRIPT"
 echo "You may need to reboot the system for the udev rules to take effect."
-
-
-

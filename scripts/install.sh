@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# Get the project and script directories
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="/var/log/vending-console"
 
 # Exit on any error
 set -e
@@ -9,6 +13,7 @@ cleanup() {
     if [ $? -ne 0 ]; then
         rm -f /etc/udev/rules.d/99-vending-console.rules
         rm -f /etc/cron.d/vending-console
+        rm -rf "$LOG_DIR"
     fi
 }
 
@@ -48,8 +53,7 @@ if [ -z "$ACTUAL_USER" ]; then
     exit 1
 fi
 
-# Get the project directory
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 
 # Install system dependencies
 echo "Installing system dependencies..."
@@ -99,7 +103,6 @@ deactivate
 
 # Create log directory
 echo "Creating log directory..."
-LOG_DIR="/var/log/vending-console"
 mkdir -p $LOG_DIR
 chown $ACTUAL_USER:$ACTUAL_USER $LOG_DIR
 
@@ -146,8 +149,10 @@ EOF
 chmod +x "$PROJECT_DIR/scripts/install.sh"
 chmod +x "$PROJECT_DIR/scripts/uninstall.sh"
 
-# Copy initial database file
-cp "$(dirname "$0")/db.json" "$PROJECT_DIR/db.json"
+# Copy/move necessary files to root directory
+cp "$SCRIPT_DIR/db.json" "$PROJECT_DIR/db.json" || { echo "Error: Failed to copy db.json"; exit 1; }
+cp "$SCRIPT_DIR/start_vending.sh" "$PROJECT_DIR/start_vending.sh" || { echo "Error: Failed to copy start_vending.sh"; exit 1; }
+chmod +x "$PROJECT_DIR/start_vending.sh"
 
 # Update app.py to use ttyVending instead of ttyUSB0
 echo "Updating configuration to use ttyVending..."

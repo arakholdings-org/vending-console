@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# Get the project and script directories
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="/var/log/vending-console"
 
 # Exit on any error
 set -e
@@ -9,6 +13,7 @@ cleanup() {
     if [ $? -ne 0 ]; then
         rm -f /etc/udev/rules.d/99-vending-console.rules
         rm -f /etc/cron.d/vending-console
+        rm -rf "$LOG_DIR"
     fi
 }
 
@@ -48,8 +53,7 @@ if [ -z "$ACTUAL_USER" ]; then
     exit 1
 fi
 
-# Get the project directory
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 
 # Install system dependencies
 echo "Installing system dependencies..."
@@ -99,7 +103,6 @@ deactivate
 
 # Create log directory
 echo "Creating log directory..."
-LOG_DIR="/var/log/vending-console"
 mkdir -p $LOG_DIR
 chown $ACTUAL_USER:$ACTUAL_USER $LOG_DIR
 
@@ -146,6 +149,7 @@ EOF
 chmod +x "$PROJECT_DIR/scripts/install.sh"
 chmod +x "$PROJECT_DIR/scripts/uninstall.sh"
 
+
 # Update app.py to use ttyVending instead of ttyUSB0
 echo "Updating configuration to use ttyVending..."
 if [ -f "$PROJECT_DIR/app.py" ]; then
@@ -160,6 +164,3 @@ echo "Log files will be stored in: $LOG_DIR"
 echo "To test the script without rebooting, run:"
 echo "  $STARTUP_SCRIPT"
 echo "You may need to reboot the system for the udev rules to take effect."
-
-
-

@@ -113,6 +113,8 @@ class MQTTBroker:
                     await self._handle_capacity_update(payload)
                 elif topic == f"vmc/{self.machine_id}/ping":
                     await self._handle_ping(payload)
+                elif topic == f"vmc/{self.machine_id}/get_inventory_by_tray":
+                    await self._handle_get_inventory_by_tray(payload)
 
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
@@ -595,6 +597,30 @@ class MQTTBroker:
                 ),
             )
 
+    async def _handle_get_inventory_by_tray(self, payload):
+        """Handle get inventory by tray request"""
+        try:
+            tray_number = payload.get("tray")
+            if tray_number is None:
+                logger.error("Tray number not provided in payload")
+                response = {"success": False, "error": "Tray number not provided"}
+            else:
+                inventory_list = self.get_inventory_by_tray(tray_number)
+                response = {
+                    "success": True,
+                    "tray": tray_number,
+                    "data": inventory_list,
+                }
+            self.client.publish(
+                f"vmc/{self.machine_id}/inventory_by_tray_status", json.dumps(response)
+            )
+        except Exception as e:
+            logger.error(f"Error handling get inventory by tray: {e}")
+            self.client.publish(
+                f"vmc/{self.machine_id}/inventory_by_tray",
+                json.dumps({"success": False, "error": str(e)}),
+            )
+
     def connect(self):
         """Connect to MQTT broker"""
         return self._connect_internal()
@@ -629,3 +655,18 @@ class MQTTBroker:
         self.client.loop_stop()
         self.client.disconnect()
         logger.info("MQTT broker stopped")
+
+    def get_inventory_by_tray(self, tray_number):
+        """
+        Returns a list of inventory values for all selections in the given tray.
+        Tray 0: selections 1-10, Tray 1: 11-20, etc.
+        """
+        start_selection = tray_number * 10 + 1
+        end_selection = start_selection + 9
+        selections = Prices.search(
+            (query.selection >= start_selection) & (query.selection <= end_selection)
+        )
+        return [
+            {"selection": item["selection"], "inventory": item.get("inventory", 0)}
+            for item in selections
+        ]

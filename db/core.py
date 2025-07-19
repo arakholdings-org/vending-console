@@ -4,5 +4,5 @@ from tinydb import TinyDB, Query
 db = TinyDB("db.json")
 query = Query()
 
-Inventory = db.table("inventory")
+Sales = db.table("sales")
 Prices = db.table("prices")

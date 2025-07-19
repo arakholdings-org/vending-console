@@ -3,12 +3,14 @@ import subprocess
 import time
 from asyncio import Queue
 
+
 import serial_asyncio
 
-from db import Prices, query
+from db import Prices, query, Sales
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
+from datetime import datetime
 
 
 class VendingMachine:
@@ -494,8 +496,28 @@ class VendingMachine:
                                 current_inventory = selection_data.get("inventory", 0)
                                 new_inventory = max(0, current_inventory - 1)
                                 Prices.update(
-                                    {"inventory": new_inventory},
+                                    {
+                                        "inventory": new_inventory,
+                                    },
                                     query.selection == selection,
+                                )
+
+                                # update the sales record
+                                Sales.insert(
+                                    {
+                                        "selection": selection,
+                                        "amount": amount,
+                                        "transaction_id": transaction_id,
+                                        "date": datetime.now().strftime("%a %d %b %Y"),
+                                    }
+                                )
+
+                                logger.info(
+                                    f"✓ Product #{selection} dispensed, inventory updated to {new_inventory}"
+                                )
+                                # Log the sale
+                                logger.info(
+                                    f"Sale recorded: Selection {selection}, Amount ${amount/100:.2f}, Transaction ID {transaction_id}"
                                 )
                                 # Queue inventory update command for VMC
                                 if self.serial_connected:

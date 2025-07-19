@@ -6,7 +6,7 @@ from asyncio import Queue
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query
+from db import Prices, query ,Sales
 from utils import broker_logger as logger
 
 
@@ -55,6 +55,7 @@ class MQTTBroker:
                 f"vmc/{self.machine_id}/set_inventory",
                 f"vmc/{self.machine_id}/set_capacity",
                 f"vmc/{self.machine_id}/ping",
+                f"vmc/{self.machine_id}/get_sales"
             ]
             for topic in topics:
                 self.client.subscribe(topic)
@@ -115,6 +116,9 @@ class MQTTBroker:
                     await self._handle_ping(payload)
                 elif topic == f"vmc/{self.machine_id}/get_inventory_by_tray":
                     await self._handle_get_inventory_by_tray(payload)
+                elif topic == f"vmc/{self.machine_id}/get_sales":
+                    await self._handle_get_sales()
+                   
 
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
@@ -160,6 +164,18 @@ class MQTTBroker:
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker: {e}")
             return False
+
+    async def _handle_get_sales(self):
+        """Handle get sales request"""
+        sales_data = Sales.all()
+        response = {
+            "success": True,
+            "sales": sales_data,
+                    }
+        self.client.publish(
+                    f"vmc/{self.machine_id}/sales_update_status", json.dumps(response)
+                )
+        return response
 
     async def _handle_price_update(self, payload):
         """Handle price update messages from MQTT with connection checks"""

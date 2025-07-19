@@ -785,3 +785,5 @@ class VendingMachine:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self._max_reconnect_delay)
         return False
+
+# 

@@ -2,6 +2,7 @@ import asyncio
 import subprocess
 import time
 from asyncio import Queue
+import uuid
 
 
 import serial_asyncio
@@ -506,6 +507,7 @@ class VendingMachine:
                                 Sales.insert(
                                     {
                                         "selection": selection,
+                                        "sale_id": str(uuid.uuid4()),
                                         "amount": amount,
                                         "transaction_id": transaction_id,
                                         "date": datetime.now().strftime("%a %d %b %Y"),
@@ -786,4 +788,5 @@ class VendingMachine:
                 delay = min(delay * 2, self._max_reconnect_delay)
         return False
 
-# 
+
+#

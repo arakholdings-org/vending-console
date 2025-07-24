@@ -375,70 +375,37 @@ class VendingMachine:
         self.command_queue = asyncio.Queue()
 
         if selection == 0:
-            # Handle cancellation
-            await self._handle_cancel_request()
+            # Cancel any running transaction
+            if (
+                self._current_transaction_task
+                and not self._current_transaction_task.done()
+            ):
+                logger.info("Cancelling active transaction")
+                self._current_transaction_task.cancel()
+                try:
+                    await self._current_transaction_task
+                except asyncio.CancelledError:
+                    logger.info("Transaction cancelled successfully")
+                except Exception as e:
+                    logger.error(f"Error cancelling transaction: {e}")
+                finally:
+                    self._current_transaction_task = None
+
+            self.current_selection = None
+            logger.info("Selection cancelled")
         else:
-            # Check inventory before proceeding
-            try:
-                selection_data = Prices.get(query.selection == selection)
-
-                if not selection_data:
-                    logger.error(
-                        f"✗ Error: Selection {selection} not found in database"
-                    )
-                    await self.cancel_selection()
-                    return
-
-                current_inventory = selection_data.get("inventory", 0)
-
-                if current_inventory <= 0:
-                    logger.error(f"✗ Error: Selection {selection} out of stock")
-                    # Send status code 0x02 (Out of stock) according to VMC protocol
-                    status_data = bytes([packet_number, 0x02]) + selection.to_bytes(
-                        2, byteorder="big"
-                    )
-                    await self._send_command(
-                        VMC_COMMANDS["SELECTION_INFO"]["code"], status_data
-                    )
-                    await self.cancel_selection()
-                    return
-
-                # Only process if no transaction is running
-                if (
-                    not self._current_transaction_task
-                    or self._current_transaction_task.done()
-                ):
-                    self.current_selection = selection
-                    logger.info(
-                        f"Selected product #{selection} (inventory: {current_inventory})"
-                    )
-                    await self._process_payment(selection)
-                else:
-                    logger.info("Ignoring selection, transaction in progress")
-
-            except Exception as e:
-                logger.error(f"✗ Error checking inventory: {str(e)}")
-                await self.cancel_selection()
+            # Only process if no transaction is running
+            if (
+                not self._current_transaction_task
+                or self._current_transaction_task.done()
+            ):
+                self.current_selection = selection
+                logger.info(f"Selected product #{selection}")
+                await self._process_payment(selection)
+            else:
+                logger.info("Ignoring selection, transaction in progress")
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
-
-    async def _handle_cancel_request(self):
-        """Handle cancel request"""
-        # Cancel any running transaction
-        if self._current_transaction_task and not self._current_transaction_task.done():
-            logger.info("Cancelling active transaction")
-            self._current_transaction_task.cancel()
-            try:
-                await self._current_transaction_task
-            except asyncio.CancelledError:
-                logger.info("Transaction cancelled successfully")
-            except Exception as e:
-                logger.error(f"Error cancelling transaction: {e}")
-            finally:
-                self._current_transaction_task = None
-
-        self.current_selection = None
-        logger.info("Selection cancelled")
 
     async def _process_payment(self, selection):
         """Simplified payment processing with proper cancel/reset after transaction"""
@@ -476,7 +443,7 @@ class VendingMachine:
                 logger.info(f"Initiating payment ${amount/100:.2f}")
                 logger.info(f"Transaction ID: {transaction_id}")
 
-                async def handle_payment_result(task):
+                def handle_payment_result(task):
                     try:
                         response = task.result()
                         approved = response.get(
@@ -488,10 +455,12 @@ class VendingMachine:
                             selection_data = Prices.get(query.selection == selection)
                             if selection_data and self.serial_connected:
                                 # dispense product
-                                await self.queue_command(
-                                    "DIRECT_DRIVE",
-                                    bytes([1, 1])
-                                    + selection.to_bytes(2, byteorder="big"),
+                                asyncio.create_task(
+                                    self.queue_command(
+                                        "DIRECT_DRIVE",
+                                        bytes([1, 1])
+                                        + selection.to_bytes(2, byteorder="big"),
+                                    )
                                 )
                                 # Update inventory in database after dispensing command
                                 current_inventory = selection_data.get("inventory", 0)
@@ -515,7 +484,7 @@ class VendingMachine:
                                 )
 
                                 logger.info(
-                                    f"✓ Product #{selection} dispensed, inventory updated to {new_inventory}"
+                                    f"✓ Product #{selection} purchased, inventory updated to {new_inventory}"
                                 )
                                 # Log the sale
                                 logger.info(
@@ -526,8 +495,10 @@ class VendingMachine:
                                     inventory_data = selection.to_bytes(
                                         2, byteorder="big"
                                     ) + bytes([new_inventory])
-                                    await self.queue_command(
-                                        "SET_INVENTORY", inventory_data
+                                    asyncio.create_task(
+                                        self.queue_command(
+                                            "SET_INVENTORY", inventory_data
+                                        )
                                     )
                             else:
                                 logger.error(
@@ -546,7 +517,7 @@ class VendingMachine:
                     finally:
                         self.current_selection = None
                         self._current_transaction_task = None
-                        await self.cancel_selection()
+                        asyncio.create_task(self.cancel_selection())
 
                 self._current_transaction_task = asyncio.create_task(
                     self.esocket_client.send_purchase_transaction(
@@ -561,7 +532,7 @@ class VendingMachine:
             logger.error(f"✗ System error: {str(e)}")
             self.current_selection = None
             self._current_transaction_task = None
-            await self.cancel_selection()
+            asyncio.create_task(self.cancel_selection())
         finally:
             if self.serial_connected:
                 await self._send_command(VMC_COMMANDS["ACK"]["code"])
@@ -674,14 +645,6 @@ class VendingMachine:
                     await self.command_queue.put(cmd_code)
                 return True
         return False
-
-    async def direct_drive_selection(self, selection_number):
-        """Immediate dispensing command"""
-        data = bytes([1, 1])  # Use both drop sensor and elevator
-        data += selection_number.to_bytes(2, byteorder="big")
-        # Send command immediately for dispensing
-        await self._send_command(VMC_COMMANDS["DIRECT_DRIVE"]["code"], data)
-        return True
 
     async def cancel_selection(self):
         """Cancel current selection with proper state reset"""

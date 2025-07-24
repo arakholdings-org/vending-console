@@ -524,9 +524,7 @@ class VendingMachine:
                         transaction_id=transaction_id, amount=amount
                     )
                 )
-                self._current_transaction_task.add_done_callback(
-                    lambda t: asyncio.create_task(handle_payment_result(t))
-                )
+                self._current_transaction_task.add_done_callback(handle_payment_result)
 
         except Exception as e:
             logger.error(f"✗ System error: {str(e)}")

@@ -479,6 +479,7 @@ class VendingMachine:
                                         "sale_id": str(uuid.uuid4()),
                                         "amount": amount,
                                         "transaction_id": transaction_id,
+                                        "time": datetime.now().strftime("%H:%M:%S"),
                                         "date": datetime.now().strftime("%a %d %b %Y"),
                                     }
                                 )

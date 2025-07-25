@@ -442,7 +442,7 @@ class VendingMachine:
                 logger.info(f"Initiating payment ${amount/100:.2f}")
                 logger.info(f"Transaction ID: {transaction_id}")
 
-                def payment_callback(task):
+                async def payment_callback(task):
                     try:
                         response = task.result()
                         if response.get(
@@ -456,47 +456,95 @@ class VendingMachine:
                             selection_data = Prices.get(query.selection == selection)
 
                             if selection_data and self.serial_connected:
-                                # dispense product
-                                asyncio.create_task(
-                                    self.queue_command(
-                                        "DIRECT_DRIVE",
-                                        bytes([1, 1])
-                                        + selection.to_bytes(2, byteorder="big"),
+                                try:
+                                    # Set state to dispensing
+                                    self.state = "dispensing"
+                                    self.dispensing_active = True
+
+                                    # dispense product with proper command format
+                                    # [motor_id(1), action(1), selection(2)]
+                                    motor_id = 1  # Default motor
+                                    action = 1  # Start motor
+                                    command_data = bytes(
+                                        [motor_id, action]
+                                    ) + selection.to_bytes(2, byteorder="big")
+
+                                    # Wait for the dispensing command to complete
+                                    success = await self.queue_command(
+                                        "DIRECT_DRIVE", command_data
                                     )
-                                )
 
-                                # Update inventory in database after dispensing command
-                                current_inventory = selection_data.get("inventory", 0)
-                                new_inventory = max(0, current_inventory - 1)
-
-                                # Update local database
-                                Prices.update(
-                                    {
-                                        "inventory": new_inventory,
-                                    },
-                                    query.selection == selection,
-                                )
-
-                                Sales.insert(
-                                    {
-                                        "selection": selection,
-                                        "transaction_id": transaction_id,
-                                        "amount": amount,
-                                        "date": datetime.now().strftime("%Y-%m-%d"),
-                                        "time": datetime.now().strftime("%H:%M:%S"),
-                                    }
-                                )
-
-                                # Create and queue inventory update command for VMC
-                                if self.serial_connected:
-                                    inventory_data = selection.to_bytes(
-                                        2, byteorder="big"
-                                    ) + bytes([new_inventory])
-                                    asyncio.create_task(
-                                        self.queue_command(
-                                            "SET_INVENTORY", inventory_data
+                                    if not success:
+                                        raise Exception(
+                                            "Failed to queue dispensing command"
                                         )
+
+                                    # Wait briefly for dispensing status
+                                    await asyncio.sleep(2)
+
+                                    if (
+                                        self.dispensing_active
+                                    ):  # If no error status received
+                                        # Update inventory in database after successful dispensing
+                                        current_inventory = selection_data.get(
+                                            "inventory", 0
+                                        )
+                                        new_inventory = max(0, current_inventory - 1)
+
+                                        # Update local database
+                                        Prices.update(
+                                            {
+                                                "inventory": new_inventory,
+                                            },
+                                            query.selection == selection,
+                                        )
+
+                                        Sales.insert(
+                                            {
+                                                "selection": selection,
+                                                "transaction_id": transaction_id,
+                                                "amount": amount,
+                                                "date": datetime.now().strftime(
+                                                    "%Y-%m-%d"
+                                                ),
+                                                "time": datetime.now().strftime(
+                                                    "%H:%M:%S"
+                                                ),
+                                            }
+                                        )
+
+                                        # Create and queue inventory update command for VMC
+                                        if self.serial_connected:
+                                            inventory_data = selection.to_bytes(
+                                                2, byteorder="big"
+                                            ) + bytes([new_inventory])
+                                            await self.queue_command(
+                                                "SET_INVENTORY", inventory_data
+                                            )
+                                    else:
+                                        logger.error("Dispensing failed or timed out")
+                                        raise Exception(
+                                            "Dispensing failed or timed out"
+                                        )
+
+                                except Exception as e:
+                                    logger.error(f"Error during dispensing: {str(e)}")
+                                    # Trigger a reversal due to dispensing failure
+                                    reversal_message = {
+                                        "TerminalId": self.esocket_client.terminal_id,
+                                        "TransactionId": str(
+                                            int(time.time()) % 1000000
+                                        ).zfill(6),
+                                        "Type": "REFUND",
+                                        "OriginalTransactionId": transaction_id,
+                                        "ReasonCode": "Dispensing failure",
+                                    }
+                                    await self.esocket_client.send_reversal_transaction(
+                                        **reversal_message
                                     )
+                                finally:
+                                    self.state = "idle"
+                                    self.dispensing_active = False
                             else:
                                 self.log(
                                     f"✗ Error: Could not dispense - serial disconnected or selection not found"
@@ -524,7 +572,9 @@ class VendingMachine:
                         transaction_id=transaction_id, amount=amount
                     )
                 )
-                self._current_transaction_task.add_done_callback(payment_callback)
+                self._current_transaction_task.add_done_callback(
+                    lambda t: asyncio.create_task(payment_callback(t))
+                )
 
         except Exception as e:
             self.log(f"✗ System error: {str(e)}")

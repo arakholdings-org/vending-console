@@ -94,23 +94,23 @@ class ESocketClient:
                 await self.writer.drain()
                 self._last_activity = time.time()
 
-                # Read response header with 45s timeout
+                # Read response header with 120s timeout
                 response_header = await asyncio.wait_for(
-                    self.reader.readexactly(2), timeout=45.0
+                    self.reader.readexactly(2), timeout=120.0
                 )
 
                 # Determine message length
                 if response_header == b"\xff\xff":
                     length_bytes = await asyncio.wait_for(
-                        self.reader.readexactly(4), timeout=45.0
+                        self.reader.readexactly(4), timeout=120.0
                     )
                     response_length = struct.unpack(">I", length_bytes)[0]
                 else:
                     response_length = response_header[0] * 256 + response_header[1]
 
-                # Read response body with 45s timeout
+                # Read response body with 120s timeout
                 response_data = await asyncio.wait_for(
-                    self.reader.readexactly(response_length), timeout=45.0
+                    self.reader.readexactly(response_length), timeout=120.0
                 )
                 self._last_activity = time.time()
                 return response_data.decode("utf-8")

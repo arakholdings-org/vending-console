@@ -6,7 +6,7 @@ from asyncio import Queue
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query ,Sales
+from db import Prices, query, Sales
 from utils import broker_logger as logger
 
 
@@ -55,7 +55,7 @@ class MQTTBroker:
                 f"vmc/{self.machine_id}/set_inventory",
                 f"vmc/{self.machine_id}/set_capacity",
                 f"vmc/{self.machine_id}/ping",
-                f"vmc/{self.machine_id}/get_sales"
+                f"vmc/{self.machine_id}/get_sales",
             ]
             for topic in topics:
                 self.client.subscribe(topic)
@@ -118,7 +118,6 @@ class MQTTBroker:
                     await self._handle_get_inventory_by_tray(payload)
                 elif topic == f"vmc/{self.machine_id}/get_sales":
                     await self._handle_get_sales()
-                   
 
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
@@ -171,10 +170,10 @@ class MQTTBroker:
         response = {
             "success": True,
             "sales": sales_data,
-                    }
+        }
         self.client.publish(
-                    f"vmc/{self.machine_id}/sales_update_status", json.dumps(response)
-                )
+            f"vmc/{self.machine_id}/sales_update_status", json.dumps(response)
+        )
         return response
 
     async def _handle_price_update(self, payload):
@@ -588,7 +587,8 @@ class MQTTBroker:
             # Create response with timestamp and any additional info from payload
             response = {
                 "status": "pong",
-                "timestamp": int(time.time()),
+                "date": datetime.now().strftime("%a %d %B %Y"),
+                "time": datetime.now().strftime("%H:%M"),
                 "machine_id": self.machine_id,
             }
 

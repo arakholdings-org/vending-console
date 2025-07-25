@@ -1,7 +1,9 @@
 import asyncio
 import subprocess
 import time
+import uuid
 from asyncio import Queue
+from datetime import datetime
 
 import serial_asyncio
 
@@ -31,6 +33,7 @@ class VendingMachine:
         self.last_command_time = 0
         self.esocket_client = ESocketClient()
         self.esocket_connected = False
+        self._last_cancel_packet = None
         self.recv_buffer = bytearray()
         self.event_queue = asyncio.Queue()
         self._payment_lock = asyncio.Lock()
@@ -67,7 +70,7 @@ class VendingMachine:
 
         # Start communication and event handling
         asyncio.create_task(self._communication_loop())
-        asyncio.create_task(self._handle_events())
+
 
     async def _connect_serial(self):
         """Connect to serial port with retries"""
@@ -168,8 +171,8 @@ class VendingMachine:
             try:
                 self.writer.close()
                 await self.writer.wait_closed()
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to close serial connection: {e}")
         self.writer = None
         self.reader = None
 
@@ -200,7 +203,8 @@ class VendingMachine:
 
         logger.info("Shutdown complete")
 
-    def _calculate_xor(self, data):
+    @staticmethod
+    def _calculate_xor(data):
         xor_value = 0
         for b in data:
             xor_value ^= b
@@ -273,7 +277,7 @@ class VendingMachine:
             self.recv_buffer = remaining
 
     def _extract_packet(self, data):
-        """Extract complete packet from raw data"""
+        """Extract a complete packet from raw data"""
         stx_pos = data.find(self.STX)
         if stx_pos == -1:
             return None, data
@@ -436,7 +440,7 @@ class VendingMachine:
 
                 transaction_id = str(
                     (int(time.time()) % 900000) + 100000
-                )  # Always 6 digits, never starts with 0
+                )  # 6 digits, never always starts with 0
                 self._current_transaction_id = transaction_id
 
                 logger.info(f"Initiating payment ${amount/100:.2f}")
@@ -456,6 +460,7 @@ class VendingMachine:
                             selection_data = Prices.get(query.selection == selection)
 
                             if selection_data and self.serial_connected:
+                                logger.info(f"Dispensing product #{selection}")
                                 # dispense product
                                 asyncio.create_task(
                                     self.queue_command(
@@ -465,7 +470,7 @@ class VendingMachine:
                                     )
                                 )
 
-                                # Update inventory in database after dispensing command
+                                # Update inventory in a database after dispensing command
                                 current_inventory = selection_data.get("inventory", 0)
                                 new_inventory = max(0, current_inventory - 1)
 
@@ -477,9 +482,12 @@ class VendingMachine:
                                     query.selection == selection,
                                 )
 
+                                # create a sales record
+
                                 Sales.insert(
                                     {
                                         "selection": selection,
+                                        "sale_id": str(uuid.uuid4()),
                                         "transaction_id": transaction_id,
                                         "amount": amount,
                                         "date": datetime.now().strftime("%Y-%m-%d"),
@@ -498,7 +506,7 @@ class VendingMachine:
                                         )
                                     )
                             else:
-                                self.log(
+                                logger.error(
                                     f"✗ Error: Could not dispense - serial disconnected or selection not found"
                                 )
                                 asyncio.create_task(self.cancel_selection())
@@ -510,10 +518,10 @@ class VendingMachine:
                                 )
                                 or "Transaction declined"
                             )
-                            self.log(f"✗ Payment failed: {error_msg}")
+                            logger.error(f"✗ Payment failed: {error_msg}")
                             asyncio.create_task(self.cancel_selection())
                     except Exception as e:
-                        self.log(f"✗ Payment error: {str(e)}")
+                        logger.error(f"✗ Payment error: {str(e)}")
                         asyncio.create_task(self.cancel_selection())
                     finally:
                         self.current_selection = None
@@ -527,7 +535,7 @@ class VendingMachine:
                 self._current_transaction_task.add_done_callback(payment_callback)
 
         except Exception as e:
-            self.log(f"✗ System error: {str(e)}")
+            logger.error(f"✗ System error: {str(e)}")
             self.current_selection = None
             self._current_transaction_task = None
             await self.cancel_selection()
@@ -535,7 +543,8 @@ class VendingMachine:
             if self.serial_connected:
                 await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
-    def _extract_error_message(self, raw_response):
+    @staticmethod
+    def _extract_error_message(raw_response):
         """Extract error message from response"""
         try:
             if 'ErrorMessage="' in raw_response:
@@ -546,8 +555,8 @@ class VendingMachine:
                 start = raw_response.index('ActionCode="') + 12
                 end = raw_response.index('"', start)
                 return f"Transaction declined: {raw_response[start:end]}"
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error extracting error: {str(e)}")
         return None
 
     async def _handle_dispensing_status(self, payload):
@@ -565,12 +574,12 @@ class VendingMachine:
 
         # Success codes
         if status_code in (0x00, 0x02):
-            self.log(f"Product #{selection} dispensed successfully")
+            logger.info(f"Product #{selection} dispensed successfully")
             self.current_selection = None
 
         # Error codes indicating jam/stuck product
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
-            self.log(
+            logger.error(
                 f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})"
             )
 
@@ -587,7 +596,7 @@ class VendingMachine:
                     "ReasonCode": f"Product jam error {status_code:02X}",
                 }
 
-                self.log("Initiating payment reversal due to product jam...")
+                logger.info("Initiating payment reversal due to product jam...")
 
                 # Send reversal to payment terminal
                 response = await self.esocket_client.send_reversal_transaction(
@@ -597,15 +606,15 @@ class VendingMachine:
                 if response.get(
                     "success", False
                 ) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                    self.log("✓ Payment reversed successfully")
+                    logger.info("✓ Payment reversed successfully")
                 else:
                     error_msg = self._extract_error_message(
                         response.get("raw_response", "")
                     )
-                    self.log(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
+                    logger.error(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
 
             except Exception as e:
-                self.log(f"✗ Reversal error: {str(e)}")
+                logger.error(f"✗ Reversal error: {str(e)}")
 
             finally:
                 # Reset machine state
@@ -617,7 +626,7 @@ class VendingMachine:
     async def queue_command(self, command_name, data=None):
         """Queue a command with connection check"""
         if not self.serial_connected:
-            self.log(f"Cannot queue command {command_name}: serial not connected")
+            logger.error(f"Cannot queue command {command_name}: serial not connected")
             return False
 
         async with self._command_semaphore:
@@ -632,7 +641,7 @@ class VendingMachine:
 
     async def cancel_selection(self):
         """Cancel current selection with proper state reset"""
-        self.log("Cancelling selection")
+        logger.info("Cancelling selection")
 
         # First send the cancel command to the machine
         data = (0).to_bytes(2, byteorder="big")
@@ -645,7 +654,7 @@ class VendingMachine:
 
     async def reset_machine_state(self):
         """Reset machine state after cancel or error"""
-        self.log("Resetting machine state")
+        logger.info("Resetting machine state")
 
         # Clear current transaction
         self._current_transaction_id = None
@@ -660,8 +669,8 @@ class VendingMachine:
             while not old_queue.empty():
                 old_queue.get_nowait()
                 old_queue.task_done()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error while reset machine state: {str(e)}")
 
         # Send a final ACK to ensure the machine is in a good state
         if self.serial_connected:
@@ -676,61 +685,4 @@ class VendingMachine:
         except asyncio.TimeoutError:
             return None
 
-    async def _process_event(self, event):
-        """Process a single event"""
-        try:
-            event_type = event.get("type")
-            if event_type == "payment":
-                await self._handle_payment_event(event)
-            elif event_type == "dispensing":
-                await self._handle_dispensing_event(event)
-        except Exception as e:
-            self.log(f"Event processing error: {e}")
 
-    async def _handle_events(self):
-        """Handle multiple events concurrently"""
-        event_tasks = set()
-
-        while self.running:
-            # Clean up completed tasks
-            event_tasks = {task for task in event_tasks if not task.done()}
-
-            # Handle new events
-            if new_event := await self._get_next_event():
-                task = asyncio.create_task(self._process_event(new_event))
-                event_tasks.add(task)
-
-            await asyncio.sleep(0.01)
-
-    async def _connect_payment_terminal(self):
-        """Connect and initialize the payment terminal."""
-        # Restart ESP service first (requires root)
-        try:
-            print("Restarting ESP service...")
-            subprocess.run(["sudo", "systemctl", "restart", "esp.service"], check=True)
-            print("ESP service restarted successfully")
-        except subprocess.CalledProcessError as e:
-            self.log(f"Failed to restart ESP service: {e}")
-        except Exception as e:
-            self.log(f"Error restarting ESP service: {e}")
-
-        # Now attempt connection with retries
-        delay = self._reconnect_delay
-        while self.running and not self.esocket_connected:
-            try:
-                if await self.esocket_client.connect():
-                    await self.esocket_client.initialize_terminal()
-                    self.esocket_connected = True
-                    self.log("Payment terminal connection established")
-                    delay = self._reconnect_delay  # Reset delay on success
-                    return True
-                else:
-                    raise Exception("Connection failed")
-            except Exception as e:
-                self.log(
-                    f"Payment terminal connection failed: {e}, retrying in {delay}s..."
-                )
-                self.esocket_connected = False
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, self._max_reconnect_delay)
-        return False

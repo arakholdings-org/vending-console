@@ -5,11 +5,10 @@ from asyncio import Queue
 
 import serial_asyncio
 
-from db import Prices, query
+from db import Prices, query, Sales
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
-from utils.inventory import create_tray_data
 
 
 class VendingMachine:

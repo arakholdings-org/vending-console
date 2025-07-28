@@ -11,6 +11,8 @@ from db import Prices, query, Sales
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
+import os
+import json
 
 
 class VendingMachine:
@@ -19,6 +21,13 @@ class VendingMachine:
     RESPONSE_TIMEOUT = 0.1
 
     def __init__(self, port="/dev/ttyUSB0", debug=False):
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "config.json"
+        )
+        with open(config_path, "r") as config_file:
+            config = json.load(config_file)
+
+        self.machine_id = config["MACHINE_ID"]
         self.port = port
         self.debug = debug
         self.STX = bytes([0xFA, 0xFB])
@@ -70,7 +79,6 @@ class VendingMachine:
 
         # Start communication and event handling
         asyncio.create_task(self._communication_loop())
-
 
     async def _connect_serial(self):
         """Connect to serial port with retries"""
@@ -488,6 +496,7 @@ class VendingMachine:
                                     {
                                         "selection": selection,
                                         "sale_id": str(uuid.uuid4()),
+                                        "machine_id": self.machine_id,
                                         "transaction_id": transaction_id,
                                         "amount": amount,
                                         "date": datetime.now().strftime("%Y-%m-%d"),
@@ -684,5 +693,3 @@ class VendingMachine:
             return await asyncio.wait_for(self.event_queue.get(), timeout=0.1)
         except asyncio.TimeoutError:
             return None
-
-

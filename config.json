@@ -1,6 +1,6 @@
 {
   "TERMINAL_ID": "ARAK0002",
-  "BROKER_IP": "31.97.56.211",
+  "BROKER_IP": "broker.arakholdings.com",
   "BROKER_PORT": 1883,
   "MACHINE_ID": "MACHINE001",
   "LOCATION": "Linux Machine"

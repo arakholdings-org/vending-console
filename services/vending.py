@@ -7,7 +7,7 @@ from datetime import datetime
 
 import serial_asyncio
 
-from db import Prices, query, Sales
+from db import Prices, query, Sales, Transactions, Jams, Stock
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
@@ -55,6 +55,9 @@ class VendingMachine:
         self._connection_monitor_task = None
         self._reconnect_delay = 5  # seconds
         self._max_reconnect_delay = 60  # seconds
+        self.sale_id = None
+        self.current_selection_data = None
+        self.amount = None
 
     def log(self, *args):
         """Legacy log method that now uses the centralized logger"""
@@ -433,14 +436,18 @@ class VendingMachine:
 
         try:
             async with self._payment_lock:
+
+                # get the selection info and set the data in the class
                 selection_data = Prices.get(query.selection == selection)
+                amount = selection_data.get("price", 0)
+                self.current_selection_data = selection_data
+                self.amount = amount
 
                 if not selection_data:
                     logger.error(f"✗ Error: Price not found for selection {selection}")
                     await self.cancel_selection()
                     return
 
-                amount = selection_data.get("price", 0)
                 if amount <= 0:
                     logger.error(f"✗ Error: Invalid price for selection {selection}")
                     await self.cancel_selection()
@@ -469,6 +476,24 @@ class VendingMachine:
 
                             if selection_data and self.serial_connected:
                                 logger.info(f"Dispensing product #{selection}")
+
+                                # record transactions
+                                Transactions.insert(
+                                    {
+                                        "selection": selection,
+                                        "transaction_id": transaction_id,
+                                        "amount": amount,
+                                        "product_name": selection_data.get(
+                                            "product_name", ""
+                                        ),
+                                        "date": datetime.now().strftime("%a %d %B %Y"),
+                                        "time": datetime.now().strftime("%H:%M:%S"),
+                                    }
+                                )
+
+                                # create the sale_id
+                                self.sale_id = str(uuid.uuid4())
+
                                 # dispense product
                                 asyncio.create_task(
                                     self.queue_command(
@@ -478,42 +503,6 @@ class VendingMachine:
                                     )
                                 )
 
-                                # Update inventory in a database after dispensing command
-                                current_inventory = selection_data.get("inventory", 0)
-                                new_inventory = max(0, current_inventory - 1)
-
-                                # Update local database
-                                Prices.update(
-                                    {
-                                        "inventory": new_inventory,
-                                    },
-                                    query.selection == selection,
-                                )
-
-                                # create a sales record
-
-                                Sales.insert(
-                                    {
-                                        "selection": selection,
-                                        "sale_id": str(uuid.uuid4()),
-                                        "machine_id": self.machine_id,
-                                        "transaction_id": transaction_id,
-                                        "amount": amount,
-                                        "date": datetime.now().strftime("%Y-%m-%d"),
-                                        "time": datetime.now().strftime("%H:%M:%S"),
-                                    }
-                                )
-
-                                # Create and queue inventory update command for VMC
-                                if self.serial_connected:
-                                    inventory_data = selection.to_bytes(
-                                        2, byteorder="big"
-                                    ) + bytes([new_inventory])
-                                    asyncio.create_task(
-                                        self.queue_command(
-                                            "SET_INVENTORY", inventory_data
-                                        )
-                                    )
                             else:
                                 logger.error(
                                     f"✗ Error: Could not dispense - serial disconnected or selection not found"
@@ -584,12 +573,68 @@ class VendingMachine:
         # Success codes
         if status_code in (0x00, 0x02):
             logger.info(f"Product #{selection} dispensed successfully")
+
+            # save the sales record
+            Sales.insert(
+                {
+                    "selection": selection,
+                    "transaction_id": self._current_transaction_id,
+                    "sale_id": self.sale_id,
+                    "product_name": self.current_selection_data.get("product_name", ""),
+                    "amount": self.amount,
+                    "date": datetime.now().strftime("%a %d %B %Y"),
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                }
+            )
+
+            current_inventory = self.current_selection_data.get("inventory", 0)
+            new_inventory = max(0, current_inventory - 1)
+
+            # Update individual selection
+            Prices.update(
+                {
+                    "inventory": new_inventory,
+                },
+                query.selection == selection,
+            )
+
+            # get current stock
+
+            current_quantity = Stock.get(
+                query.product_name
+                == self.current_selection_data.get("product_name", "")
+            ).get("quantity", 0)
+
+            # update the stock
+            Stock.update(
+                {
+                    "quantity": current_quantity - 1,
+                },
+                query.product_name
+                == self.current_selection_data.get("product_name", ""),
+            )
+
+            # set current data to none
+
             self.current_selection = None
+            self.current_selection_data = None
+            self._current_transaction_id = None
 
         # Error codes indicating jam/stuck product
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
             logger.error(
                 f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})"
+            )
+
+            Jams.insert(
+                {
+                    "selection": selection,
+                    "transaction_id": self._current_transaction_id,
+                    "product_name": self.current_selection_data.get("product_name", ""),
+                    "amount": self.amount,
+                    "date": datetime.now().strftime("%a %d %B %Y"),
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                }
             )
 
             # Create reversal transaction

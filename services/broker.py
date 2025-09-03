@@ -6,7 +6,7 @@ from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query, Sales
+from db import Prices, query, Sales, Stock, Jams, Transactions
 from utils import broker_logger as logger
 
 
@@ -50,12 +50,16 @@ class MQTTBroker:
 
             # Subscribe to topics
             topics = [
+                f"vmc/{self.machine_id}/ping",
                 f"vmc/{self.machine_id}/set_price",
-                f"vmc/{self.machine_id}/get_prices",
                 f"vmc/{self.machine_id}/set_inventory",
                 f"vmc/{self.machine_id}/set_capacity",
-                f"vmc/{self.machine_id}/ping",
+                f"vmc/{self.machine_id}/set_stock",
                 f"vmc/{self.machine_id}/get_sales",
+                f"vmc/{self.machine_id}/get_jams",
+                f"vmc/{self.machine_id}/get_transactions",
+                f"vmc/{self.machine_id}/get_stock",
+                f"vmc/{self.machine_id}/get_prices",
             ]
             for topic in topics:
                 self.client.subscribe(topic)
@@ -106,16 +110,24 @@ class MQTTBroker:
 
                 if topic == f"vmc/{self.machine_id}/set_price":
                     await self._handle_price_update(payload)
-                elif topic == f"vmc/{self.machine_id}/get_prices":
-                    await self._handle_get_prices()
                 elif topic == f"vmc/{self.machine_id}/set_inventory":
                     await self._handle_inventory_update(payload)
                 elif topic == f"vmc/{self.machine_id}/set_capacity":
                     await self._handle_capacity_update(payload)
+                elif topic == f"vmc/{self.machine_id}/set_stock":
+                    await self._handle_stock_update(payload)
                 elif topic == f"vmc/{self.machine_id}/ping":
                     await self._handle_ping(payload)
                 elif topic == f"vmc/{self.machine_id}/get_sales":
                     await self._handle_get_sales()
+                elif topic == f"vmc/{self.machine_id}/get_prices":
+                    await self._handle_get_prices()
+                elif topic == f"vmc/{self.machine_id}/get_jams":
+                    await self._handle_get_jams()
+                elif topic == f"vmc/{self.machine_id}/get_transactions":
+                    await self._handle_get_transactions()
+                elif topic == f"vmc/{self.machine_id}/get_stock":
+                    await self._handle_get_stock()
 
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
@@ -161,6 +173,68 @@ class MQTTBroker:
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker: {e}")
             return False
+
+    async def _handle_stock_update(self, payload):
+
+        product_name = payload.get("product_name")
+        quantity = int(payload.get("quantity"))
+
+        Stock.upsert(
+            {
+                "product_name": product_name,
+                "quantity": quantity,
+                "date": datetime.now().strftime("%a %d %B %Y"),
+                "time": datetime.now().strftime("%H:%M:%S"),
+            },
+            query.product_name == product_name,
+        )
+
+        response = {
+            "success": True,
+        }
+
+        self.client.publish(
+            f"vmc/{self.machine_id}/stock_update_status", json.dumps(response)
+        )
+
+    # get jams
+    async def _handle_get_jams(self):
+        """Handle get jams request"""
+        jams_data = Jams.all()
+        response = {
+            "success": True,
+            "jams": jams_data,
+        }
+        self.client.publish(
+            f"vmc/{self.machine_id}/jams_update_status", json.dumps(response)
+        )
+        return response
+
+    # get transactions
+    async def _handle_get_transactions(self):
+        """Handle get transactions request"""
+        transactions_data = Transactions.all()
+        response = {
+            "success": True,
+            "transactions": transactions_data,
+        }
+        self.client.publish(
+            f"vmc/{self.machine_id}/transactions_update_status", json.dumps(response)
+        )
+        return response
+
+    # get stock
+    async def _handle_get_stock(self):
+        """Handle get stock request"""
+        stock_data = Stock.all()
+        response = {
+            "success": True,
+            "stock": stock_data,
+        }
+        self.client.publish(
+            f"vmc/{self.machine_id}/stock_update_status", json.dumps(response)
+        )
+        return response
 
     async def _handle_get_sales(self):
         """Handle get sales request"""
@@ -645,4 +719,3 @@ class MQTTBroker:
         self.client.loop_stop()
         self.client.disconnect()
         logger.info("MQTT broker stopped")
-

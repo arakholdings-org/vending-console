@@ -349,6 +349,7 @@ class MQTTBroker:
 
             tray_number = payload.get("tray")
             inventory = payload.get("inventory")
+            product_name = payload.get("product_name")
             selection = payload.get("selection")
             set_all = payload.get("all", False)
 
@@ -371,6 +372,7 @@ class MQTTBroker:
                 Prices.upsert(
                     {
                         "selection": selection,
+                        "product_name": product_name,
                         "inventory": inventory,
                     },
                     query.selection == selection,
@@ -395,6 +397,7 @@ class MQTTBroker:
                     Prices.upsert(
                         {
                             "inventory": inventory,
+                            "product_name": product_name,
                         },
                         query.selection == sel,
                     )

@@ -1,704 +1,564 @@
 {
   "prices": {
     "1": {
-      "selection": 50,
+      "selection":50,
       "tray": 4,
       "price": 100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "2": {
       "selection": 51,
       "tray": 5,
       "price": 100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "3": {
       "selection": 52,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "4": {
       "selection": 53,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "5": {
       "selection": 54,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "6": {
       "selection": 55,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "7": {
       "selection": 56,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "8": {
       "selection": 57,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "9": {
       "selection": 58,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "10": {
       "selection": 59,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "11": {
       "selection": 60,
       "tray": 5,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "12": {
       "selection": 1,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "13": {
       "selection": 2,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "14": {
       "selection": 3,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "15": {
       "selection": 4,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "16": {
       "selection": 5,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "17": {
       "selection": 6,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "18": {
       "selection": 7,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "19": {
       "selection": 8,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "20": {
       "selection": 9,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "21": {
       "selection": 10,
       "tray": 0,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "22": {
       "selection": 11,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "23": {
       "selection": 12,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "24": {
       "selection": 13,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "25": {
       "selection": 14,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "26": {
       "selection": 15,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "27": {
       "selection": 16,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "28": {
       "selection": 17,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "29": {
       "selection": 18,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "30": {
       "selection": 19,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "31": {
       "selection": 20,
       "tray": 1,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "32": {
       "selection": 21,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "33": {
       "selection": 22,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "34": {
       "selection": 23,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "35": {
       "selection": 24,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "36": {
       "selection": 25,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "37": {
       "selection": 26,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "38": {
       "selection": 27,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "39": {
       "selection": 28,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "40": {
       "selection": 29,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "41": {
       "selection": 30,
       "tray": 2,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "42": {
       "selection": 31,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "43": {
       "selection": 32,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "44": {
       "selection": 33,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "45": {
       "selection": 34,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "46": {
       "selection": 35,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "47": {
       "selection": 36,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "48": {
       "selection": 37,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "49": {
       "selection": 38,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "50": {
       "selection": 39,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "51": {
       "selection": 40,
       "tray": 3,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "52": {
       "selection": 41,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "53": {
       "selection": 42,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "54": {
       "selection": 43,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "55": {
       "selection": 44,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "56": {
       "selection": 45,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "57": {
       "selection": 46,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "58": {
       "selection": 47,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "59": {
       "selection": 48,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "60": {
       "selection": 49,
       "tray": 4,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "61": {
       "selection": 61,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "62": {
       "selection": 62,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "63": {
       "selection": 63,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     },
     "64": {
       "selection": 64,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "coke"
     },
     "65": {
       "selection": 65,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "dragon"
     },
     "66": {
       "selection": 66,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "minutemaid"
     },
     "67": {
       "selection": 67,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "redbull"
     },
     "68": {
       "selection": 68,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "sparletta"
     },
     "69": {
       "selection": 69,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "switch"
     },
     "70": {
       "selection": 70,
       "tray": 6,
-      "price": 100,
+      "price":100,
       "inventory": 5,
-      "capacity": 5
-    },
-    "71": {
-      "selection": 71,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "72": {
-      "selection": 72,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "73": {
-      "selection": 73,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "74": {
-      "selection": 74,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "75": {
-      "selection": 75,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "76": {
-      "selection": 76,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "77": {
-      "selection": 77,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "78": {
-      "selection": 78,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "79": {
-      "selection": 79,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "80": {
-      "selection": 80,
-      "tray": 7,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "81": {
-      "selection": 81,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "82": {
-      "selection": 82,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "83": {
-      "selection": 83,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "84": {
-      "selection": 84,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "85": {
-      "selection": 85,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "86": {
-      "selection": 86,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "87": {
-      "selection": 87,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "88": {
-      "selection": 88,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "89": {
-      "selection": 89,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "90": {
-      "selection": 90,
-      "tray": 8,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "91": {
-      "selection": 91,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "92": {
-      "selection": 92,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "93": {
-      "selection": 93,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "94": {
-      "selection": 94,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "95": {
-      "selection": 95,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "96": {
-      "selection": 96,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "97": {
-      "selection": 97,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "98": {
-      "selection": 98,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "99": {
-      "selection": 99,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
-    },
-    "100": {
-      "selection": 100,
-      "tray": 9,
-      "price": 100,
-      "inventory": 5,
-      "capacity": 5
+      "capacity": 5,
+      "product_name": "water"
     }
   }
 }

@@ -565,6 +565,7 @@ class VendingMachine:
         status_code = payload[1]
         # Use the selection from the payload if available, else fallback to self.current_selection
         selection = self.current_selection
+
         if len(payload) >= 3:
             selection_from_payload = int.from_bytes(payload[2:4], "big")
             if selection_from_payload != 0:
@@ -600,15 +601,29 @@ class VendingMachine:
 
             # get current stock
 
-            current_quantity = Stock.get(
+            stock = Stock.search(
                 query.product_name
                 == self.current_selection_data.get("product_name", "")
-            ).get("quantity", 0)
+            )
+
+            if len(stock) == 0:
+                logger.warning(
+                    f"No stock record found for {self.current_selection_data.get('product_name', '')}, skipping stock update."
+                )
+                self.current_selection = None
+                self.current_selection_data = None
+                self._current_transaction_id = None
+                await self._send_command(VMC_COMMANDS["ACK"]["code"])
+                return
+
+            current_quantity = stock[0].get("quantity", 0)
 
             # update the stock
-            Stock.update(
+            Stock.upsert(
                 {
                     "quantity": current_quantity - 1,
+                    "date": datetime.now().strftime("%a %d %B %Y"),
+                    "time": datetime.now().strftime("%H:%M:%S"),
                 },
                 query.product_name
                 == self.current_selection_data.get("product_name", ""),

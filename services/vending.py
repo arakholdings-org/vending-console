@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import subprocess
 import time
 import uuid
@@ -7,12 +9,10 @@ from datetime import datetime
 
 import serial_asyncio
 
-from db import Prices, query, Sales, Transactions, Jams, Stock
+from db import Prices, Sales, Stock, query
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
-import os
-import json
 
 
 class VendingMachine:
@@ -477,20 +477,6 @@ class VendingMachine:
                             if selection_data and self.serial_connected:
                                 logger.info(f"Dispensing product #{selection}")
 
-                                # record transactions
-                                Transactions.insert(
-                                    {
-                                        "selection": selection,
-                                        "transaction_id": transaction_id,
-                                        "amount": amount,
-                                        "product_name": selection_data.get(
-                                            "product_name", ""
-                                        ),
-                                        "date": datetime.now().strftime("%a %d %B %Y"),
-                                        "time": datetime.now().strftime("%H:%M:%S"),
-                                    }
-                                )
-
                                 # create the sale_id
                                 self.sale_id = str(uuid.uuid4())
 
@@ -581,6 +567,8 @@ class VendingMachine:
                     "selection": selection,
                     "transaction_id": self._current_transaction_id,
                     "sale_id": self.sale_id,
+                    "status": "success",
+                    "reason": "dispensed",
                     "product_name": self.current_selection_data.get("product_name", ""),
                     "amount": self.amount,
                     "date": datetime.now().strftime("%a %d %B %Y"),
@@ -641,10 +629,13 @@ class VendingMachine:
                 f"Product #{selection} - Error: Product may be stuck (code: {status_code:02X})"
             )
 
-            Jams.insert(
+            Sales.insert(
                 {
                     "selection": selection,
                     "transaction_id": self._current_transaction_id,
+                    "sale_id": self.sale_id,
+                    "status": "error",
+                    "reason": "jammed",
                     "product_name": self.current_selection_data.get("product_name", ""),
                     "amount": self.amount,
                     "date": datetime.now().strftime("%a %d %B %Y"),

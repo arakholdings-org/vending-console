@@ -6,7 +6,7 @@ from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query, Sales, Stock, Jams, Transactions
+from db import Prices, query, Sales, Stock
 from utils import broker_logger as logger
 
 
@@ -56,8 +56,6 @@ class MQTTBroker:
                 f"vmc/{self.machine_id}/set_capacity",
                 f"vmc/{self.machine_id}/set_stock",
                 f"vmc/{self.machine_id}/get_sales",
-                f"vmc/{self.machine_id}/get_jams",
-                f"vmc/{self.machine_id}/get_transactions",
                 f"vmc/{self.machine_id}/get_stock",
                 f"vmc/{self.machine_id}/get_prices",
             ]
@@ -122,10 +120,6 @@ class MQTTBroker:
                     await self._handle_get_sales()
                 elif topic == f"vmc/{self.machine_id}/get_prices":
                     await self._handle_get_prices()
-                elif topic == f"vmc/{self.machine_id}/get_jams":
-                    await self._handle_get_jams()
-                elif topic == f"vmc/{self.machine_id}/get_transactions":
-                    await self._handle_get_transactions()
                 elif topic == f"vmc/{self.machine_id}/get_stock":
                     await self._handle_get_stock()
 
@@ -196,32 +190,6 @@ class MQTTBroker:
         self.client.publish(
             f"vmc/{self.machine_id}/stock_update_status", json.dumps(response)
         )
-
-    # get jams
-    async def _handle_get_jams(self):
-        """Handle get jams request"""
-        jams_data = Jams.all()
-        response = {
-            "success": True,
-            "jams": jams_data,
-        }
-        self.client.publish(
-            f"vmc/{self.machine_id}/jams_update_status", json.dumps(response)
-        )
-        return response
-
-    # get transactions
-    async def _handle_get_transactions(self):
-        """Handle get transactions request"""
-        transactions_data = Transactions.all()
-        response = {
-            "success": True,
-            "transactions": transactions_data,
-        }
-        self.client.publish(
-            f"vmc/{self.machine_id}/transactions_update_status", json.dumps(response)
-        )
-        return response
 
     # get stock
     async def _handle_get_stock(self):
@@ -629,6 +597,7 @@ class MQTTBroker:
                     {
                         "selection": price.get("selection"),
                         "price": price.get("price"),
+                        "product_name": price.get("product_name"),
                         "inventory": price.get("inventory"),
                         "capacity": price.get("capacity"),
                     },

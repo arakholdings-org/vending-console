@@ -9,7 +9,7 @@ from datetime import datetime
 
 import serial_asyncio
 
-from db import Prices, Sales, Stock, query
+from db import Prices, Sales, Stock, query, Transaction
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
@@ -471,6 +471,20 @@ class VendingMachine:
                         ):
                             logger.info("✓ Payment approved")
 
+                            Transaction.insert(
+                                {
+                                    "transaction_id": transaction_id,
+                                    "selection": self.current_selection,
+                                    "status": "approved",
+                                    "amount": amount,
+                                    "product_name": selection_data.get(
+                                        "product_name", ""
+                                    ),
+                                    "date": datetime.now().strftime("%a %d %b %Y"),
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                }
+                            )
+
                             selection = self.current_selection
                             selection_data = Prices.get(query.selection == selection)
 
@@ -501,6 +515,20 @@ class VendingMachine:
                                     response.get("raw_response", "")
                                 )
                                 or "Transaction declined"
+                            )
+
+                            Transaction.insert(
+                                {
+                                    "transaction_id": self._current_transaction_id,
+                                    "selection": self.current_selection,
+                                    "status": "declined",
+                                    "amount": amount,
+                                    "product_name": selection_data.get(
+                                        "product_name", ""
+                                    ),
+                                    "date": datetime.now().strftime("%a %d %b %Y"),
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                }
                             )
                             logger.error(f"✗ Payment failed: {error_msg}")
                             asyncio.create_task(self.cancel_selection())

@@ -9,7 +9,7 @@ from datetime import datetime
 
 import serial_asyncio
 
-from db import Prices, Sales, Stock, query
+from db import Prices, Sales, Stock, query, Transaction
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
@@ -471,6 +471,21 @@ class VendingMachine:
                         ):
                             logger.info("✓ Payment approved")
 
+                            # log the transaction
+                            Transaction.insert(
+                                {
+                                    "selection": selection,
+                                    "transaction_id": transaction_id,
+                                    "status": "approved",
+                                    "product_name": selection_data.get(
+                                        "product_name", ""
+                                    ),
+                                    "amount": amount,
+                                    "date": datetime.now().strftime("%a %d %B %Y"),
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                }
+                            )
+
                             selection = self.current_selection
                             selection_data = Prices.get(query.selection == selection)
 
@@ -496,6 +511,20 @@ class VendingMachine:
                                 asyncio.create_task(self.cancel_selection())
 
                         else:
+
+                            Transaction.insert(
+                                {
+                                    "selection": selection,
+                                    "transaction_id": transaction_id,
+                                    "status": "declined",
+                                    "product_name": selection_data.get(
+                                        "product_name", ""
+                                    ),
+                                    "amount": amount,
+                                    "date": datetime.now().strftime("%a %d %B %Y"),
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                }
+                            )
                             error_msg = (
                                 self._extract_error_message(
                                     response.get("raw_response", "")

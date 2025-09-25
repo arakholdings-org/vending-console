@@ -6,7 +6,7 @@ from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query, Sales, Stock
+from db import Prices, query, Sales, Stock, Transactions
 from utils import broker_logger as logger
 
 
@@ -58,6 +58,7 @@ class MQTTBroker:
                 f"vmc/{self.machine_id}/get_sales",
                 f"vmc/{self.machine_id}/get_stock",
                 f"vmc/{self.machine_id}/get_prices",
+                f"vmc/{self.machine_id}/get_transactions",
             ]
             for topic in topics:
                 self.client.subscribe(topic)
@@ -122,6 +123,8 @@ class MQTTBroker:
                     await self._handle_get_prices()
                 elif topic == f"vmc/{self.machine_id}/get_stock":
                     await self._handle_get_stock()
+                elif topic == f"vmc/{self.machine_id}/get_transactions":
+                    await self._handle_get_transactions()
 
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
@@ -167,6 +170,18 @@ class MQTTBroker:
         except Exception as e:
             logger.error(f"Failed to connect to MQTT broker: {e}")
             return False
+
+    async def _handle_get_transactions(self):
+        """Handle get transactions request"""
+        transactions_data = Transactions.all()
+        response = {
+            "success": True,
+            "transactions": transactions_data,
+        }
+        self.client.publish(
+            f"vmc/{self.machine_id}/transactions_update_status", json.dumps(response)
+        )
+        return response
 
     async def _handle_stock_update(self, payload):
 

@@ -11,6 +11,5 @@ query = Query()
 
 Sales = sales_db.table("sales")
 Prices = db.table("prices")
-Jams = jams_db.table("jams")
-Transactions = transactions_db.table("transactions")
+Transaction = transactions_db.table("transactions")
 Stock = stocks_db.table("stock")

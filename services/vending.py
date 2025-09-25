@@ -474,7 +474,7 @@ class VendingMachine:
                             # log the transaction
                             Transaction.insert(
                                 {
-                                    "selection": selection,
+                                    "selection": self.current_selection,
                                     "transaction_id": self._current_transaction_id,
                                     "status": "approved",
                                     "product_name": self.current_selection_data.get(
@@ -514,7 +514,7 @@ class VendingMachine:
 
                             Transaction.insert(
                                 {
-                                    "selection": selection,
+                                    "selection": self.current_selectionselection,
                                     "transaction_id": self.current_transaction_id,
                                     "status": "declined",
                                     "product_name": self.current_selection_data.get(

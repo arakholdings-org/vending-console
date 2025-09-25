@@ -475,9 +475,9 @@ class VendingMachine:
                             Transaction.insert(
                                 {
                                     "selection": selection,
-                                    "transaction_id": transaction_id,
+                                    "transaction_id": self._current_transaction_id,
                                     "status": "approved",
-                                    "product_name": selection_data.get(
+                                    "product_name": self.current_selection_data.get(
                                         "product_name", ""
                                     ),
                                     "amount": amount,
@@ -515,9 +515,9 @@ class VendingMachine:
                             Transaction.insert(
                                 {
                                     "selection": selection,
-                                    "transaction_id": transaction_id,
+                                    "transaction_id": self.current_transaction_id,
                                     "status": "declined",
-                                    "product_name": selection_data.get(
+                                    "product_name": self.current_selection_data.get(
                                         "product_name", ""
                                     ),
                                     "amount": amount,

@@ -6,7 +6,7 @@ from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query, Sales, Stock, Transactions
+from db import Prices, query, Sales, Stock, Transaction
 from utils import broker_logger as logger
 
 
@@ -173,7 +173,7 @@ class MQTTBroker:
 
     async def _handle_get_transactions(self):
         """Handle get transactions request"""
-        transactions_data = Transactions.all()
+        transactions_data = Transaction.all()
         response = {
             "success": True,
             "transactions": transactions_data,

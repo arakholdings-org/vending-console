@@ -9,7 +9,7 @@ from datetime import datetime
 
 import serial_asyncio
 
-from db import Prices, Sales, Stock, query, Transaction
+from db import Prices, Sales, query, Transaction
 from services.esocket import ESocketClient
 from utils import VMC_COMMANDS
 from utils import vending_logger as logger
@@ -514,8 +514,8 @@ class VendingMachine:
 
                             Transaction.insert(
                                 {
-                                    "selection": self.current_selectionselection,
-                                    "transaction_id": self.current_transaction_id,
+                                    "selection": self.current_selection,
+                                    "transaction_id": self._current_transaction_id,
                                     "status": "declined",
                                     "product_name": self.current_selection_data.get(
                                         "product_name", ""
@@ -614,36 +614,6 @@ class VendingMachine:
                     "inventory": new_inventory,
                 },
                 query.selection == selection,
-            )
-
-            # get current stock
-
-            stock = Stock.search(
-                query.product_name
-                == self.current_selection_data.get("product_name", "")
-            )
-
-            if len(stock) == 0:
-                logger.warning(
-                    f"No stock record found for {self.current_selection_data.get('product_name', '')}, skipping stock update."
-                )
-                self.current_selection = None
-                self.current_selection_data = None
-                self._current_transaction_id = None
-                await self._send_command(VMC_COMMANDS["ACK"]["code"])
-                return
-
-            current_quantity = stock[0].get("quantity", 0)
-
-            # update the stock
-            Stock.upsert(
-                {
-                    "quantity": current_quantity - 1,
-                    "date": datetime.now().strftime("%a %d %B %Y"),
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                },
-                query.product_name
-                == self.current_selection_data.get("product_name", ""),
             )
 
             # set current data to none

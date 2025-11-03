@@ -6,7 +6,7 @@ from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
-from db import Prices, query, Sales, Stock, Transaction
+from db import Prices, query, Sales, Transaction
 from utils import broker_logger as logger
 
 
@@ -113,16 +113,12 @@ class MQTTBroker:
                     await self._handle_inventory_update(payload)
                 elif topic == f"vmc/{self.machine_id}/set_capacity":
                     await self._handle_capacity_update(payload)
-                elif topic == f"vmc/{self.machine_id}/set_stock":
-                    await self._handle_stock_update(payload)
                 elif topic == f"vmc/{self.machine_id}/ping":
                     await self._handle_ping(payload)
                 elif topic == f"vmc/{self.machine_id}/get_sales":
                     await self._handle_get_sales()
                 elif topic == f"vmc/{self.machine_id}/get_prices":
                     await self._handle_get_prices()
-                elif topic == f"vmc/{self.machine_id}/get_stock":
-                    await self._handle_get_stock()
                 elif topic == f"vmc/{self.machine_id}/get_transactions":
                     await self._handle_get_transactions()
 
@@ -183,41 +179,6 @@ class MQTTBroker:
         )
         return response
 
-    async def _handle_stock_update(self, payload):
-
-        product_name = payload.get("product_name")
-        quantity = int(payload.get("quantity"))
-
-        Stock.upsert(
-            {
-                "product_name": product_name,
-                "quantity": quantity,
-                "date": datetime.now().strftime("%a %d %B %Y"),
-                "time": datetime.now().strftime("%H:%M:%S"),
-            },
-            query.product_name == product_name,
-        )
-
-        response = {
-            "success": True,
-        }
-
-        self.client.publish(
-            f"vmc/{self.machine_id}/stock_update_status", json.dumps(response)
-        )
-
-    # get stock
-    async def _handle_get_stock(self):
-        """Handle get stock request"""
-        stock_data = Stock.all()
-        response = {
-            "success": True,
-            "stock": stock_data,
-        }
-        self.client.publish(
-            f"vmc/{self.machine_id}/stock_update_status", json.dumps(response)
-        )
-        return response
 
     async def _handle_get_sales(self):
         """Handle get sales request"""

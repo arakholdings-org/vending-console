@@ -1,10 +1,9 @@
 import asyncio
-import socket
-import struct
-import xml.etree.ElementTree as ET
 import json
 import os
+import struct
 import time
+import xml.etree.ElementTree as ET
 from typing import Dict, Any
 
 
@@ -96,13 +95,13 @@ class ESocketClient:
 
                 # Read response header with 120s timeout
                 response_header = await asyncio.wait_for(
-                    self.reader.readexactly(2), timeout=120.0
+                    self.reader.readexactly(2), timeout=200.0
                 )
 
                 # Determine message length
                 if response_header == b"\xff\xff":
                     length_bytes = await asyncio.wait_for(
-                        self.reader.readexactly(4), timeout=120.0
+                        self.reader.readexactly(4), timeout=200.0
                     )
                     response_length = struct.unpack(">I", length_bytes)[0]
                 else:
@@ -110,7 +109,7 @@ class ESocketClient:
 
                 # Read response body with 120s timeout
                 response_data = await asyncio.wait_for(
-                    self.reader.readexactly(response_length), timeout=120.0
+                    self.reader.readexactly(response_length), timeout=200.0
                 )
                 self._last_activity = time.time()
                 return response_data.decode("utf-8")

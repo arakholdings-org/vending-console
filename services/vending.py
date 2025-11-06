@@ -265,10 +265,6 @@ class VendingMachine:
                     self.recv_buffer.extend(data)
                     await self._process_incoming_data()
 
-                # Only send ACKs when needed and connected
-                if self.state == "dispensing" and self.serial_connected:
-                    await self._send_command(VMC_COMMANDS["ACK"]["code"])
-
             except asyncio.TimeoutError:
                 # Timeout is normal, continue
                 pass
@@ -356,6 +352,8 @@ class VendingMachine:
             logger.warning("Invalid SELECTION_INFO packet")
             return
 
+        logger.info(f"Selection info event received")
+
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
     async def _handle_selection_cancel(self, payload):
@@ -382,12 +380,6 @@ class VendingMachine:
             return
 
         self._last_cancel_packet = packet_number
-
-        # Reset after processing a cancel to prevent queueing issues
-        self.command_queue = (
-            asyncio.Queue()
-        )  # Create a new queue to clear pending commands
-
         if selection == 0:
             # Cancel any running transaction
             if (
@@ -408,16 +400,18 @@ class VendingMachine:
             self.current_selection = None
             logger.info("Selection cancelled")
         else:
-            # Only process if no transaction is running
-            if (
-                not self._current_transaction_task
-                or self._current_transaction_task.done()
-            ):
-                self.current_selection = selection
-                logger.info(f"Selected product #{selection}")
-                await self._process_payment(selection)
-            else:
-                logger.info("Ignoring selection, transaction in progress")
+            # Only process if machine is idle
+            if self.state != "idle":
+                logger.info(f"Ignoring selection, machine state is {self.state}")
+                await self._send_command(VMC_COMMANDS["ACK"]["code"])
+                return
+
+            # Set state to selected and process payment
+            self.state = "selected"
+            logger.info(f"State changed to: {self.state}")
+            self.current_selection = selection
+            logger.info(f"Selected product #{selection}")
+            await self._process_payment(selection)
 
         await self._send_command(VMC_COMMANDS["ACK"]["code"])
 
@@ -436,6 +430,9 @@ class VendingMachine:
 
         try:
             async with self._payment_lock:
+                # Set state to paying
+                self.state = "paying"
+                logger.info(f"State changed to: {self.state}")
 
                 # get the selection info and set the data in the class
                 selection_data = Prices.get(query.selection == selection)
@@ -490,6 +487,9 @@ class VendingMachine:
                             selection_data = Prices.get(query.selection == selection)
 
                             if selection_data and self.serial_connected:
+                                # Set state to dispensing
+                                self.state = "dispensing"
+                                logger.info(f"State changed to: {self.state}")
                                 logger.info(f"Dispensing product #{selection}")
 
                                 # create the sale_id
@@ -616,11 +616,8 @@ class VendingMachine:
                 query.selection == selection,
             )
 
-            # set current data to none
-
-            self.current_selection = None
-            self.current_selection_data = None
-            self._current_transaction_id = None
+            # reset the machine state
+            await self.reset_machine_state()
 
         # Error codes indicating jam/stuck product
         elif status_code in (0x03, 0x04, 0x06, 0x07, 0xFF):
@@ -642,45 +639,9 @@ class VendingMachine:
                 }
             )
 
-            # Create reversal transaction
-            try:
-                transaction_id = str(int(time.time()) % 1000000).zfill(6)
 
-                # Construct reversal XML message
-                reversal_message = {
-                    "TerminalId": self.esocket_client.terminal_id,
-                    "TransactionId": transaction_id,
-                    "Type": "REFUND",
-                    "OriginalTransactionId": self._current_transaction_id,
-                    "ReasonCode": f"Product jam error {status_code:02X}",
-                }
 
-                logger.info("Initiating payment reversal due to product jam...")
-
-                # Send reversal to payment terminal
-                response = await self.esocket_client.send_reversal_transaction(
-                    **reversal_message
-                )
-
-                if response.get(
-                    "success", False
-                ) and 'ActionCode="APPROVE"' in response.get("raw_response", ""):
-                    logger.info("✓ Payment reversed successfully")
-                else:
-                    error_msg = self._extract_error_message(
-                        response.get("raw_response", "")
-                    )
-                    logger.error(f"✗ Reversal failed: {error_msg or 'Unknown error'}")
-
-            except Exception as e:
-                logger.error(f"✗ Reversal error: {str(e)}")
-
-            finally:
-                # Reset machine state
-                self.current_selection = None
-                await self.cancel_selection()
-
-        await self._send_command(VMC_COMMANDS["ACK"]["code"])
+            await self.reset_machine_state()
 
     async def queue_command(self, command_name, data=None):
         """Queue a command with connection check"""
@@ -719,17 +680,9 @@ class VendingMachine:
         self._current_transaction_id = None
         self.current_selection = None
 
-        # Create a fresh command queue
-        old_queue = self.command_queue
-        self.command_queue = asyncio.Queue()
-
-        # Drain the old queue to prevent any resource leaks
-        try:
-            while not old_queue.empty():
-                old_queue.get_nowait()
-                old_queue.task_done()
-        except Exception as e:
-            logger.error(f"Error while reset machine state: {str(e)}")
+        # Set state to idle
+        self.state = "idle"
+        logger.info(f"State changed to: {self.state}")
 
         # Send a final ACK to ensure the machine is in a good state
         if self.serial_connected:
